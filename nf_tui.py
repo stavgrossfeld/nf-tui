@@ -536,6 +536,16 @@ class NfScope(App):
         self._groups = {}
         for t in self._visible_tasks():
             self._groups.setdefault(split_name(t.name)[0], []).append(t)
+        # Header summary so the TOTAL (across all process groups) is visible.
+        n = len(self.tasks)
+        nproc = len({split_name(t.name)[0] for t in self.tasks})
+        done = sum(is_done(t) for t in self.tasks)
+        failed = sum(is_failed(t) for t in self.tasks)
+        summary = f"{done:,}/{n:,} tasks · {nproc} processes"
+        if failed:
+            summary += f" · {failed} failed"
+        loc = str(self.log_file).replace(str(Path.home()), "~")
+        self.sub_title = f"{summary}  —  {loc}"
         sig = tuple((t.hash, t.status, t.exit) for t in self.tasks) + (self.failed_only,)
         if sig != self._sig:
             self._sig = sig
