@@ -80,6 +80,22 @@ Requires Python ≥ 3.10. Viewing BAM/CRAM needs the run's container images
 present locally (Docker/Podman/Singularity). `L` (external `zless`) works in the
 terminal, not the browser.
 
+## Development
+
+```bash
+uv run --extra dev pytest        # run the test suite
+
+# generate a synthetic run to poke at (or stress-test) by hand:
+python tests/generate_run.py /tmp/bigrun --tasks 10000 --procs 50
+nf-tui /tmp/bigrun
+```
+
+Tests cover parsing against the real Nextflow log format, the file viewers,
+edge cases, and a 10,000-task scale check (parse < 0.5s, per-render < 50ms,
+idle refresh ~free). The scale tests synthesize a `.nextflow.log` rather than
+run 10k real tasks; `test_parse_matches_real_format` pins the parser to a
+verbatim real log line so the synthetic stays faithful.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

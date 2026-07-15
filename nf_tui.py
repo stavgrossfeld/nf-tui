@@ -443,6 +443,9 @@ class NfScope(App):
         self._shown: tuple | None = None # what the log pane currently shows
         self._tailer: Follower | None = None
         self._task_by_hash: dict[str, Task] = {}
+        self._log_stat: tuple | None = None   # (size, mtime) of last-parsed log
+        self._force_refresh = False           # re-parse even if the log is unchanged
+        self._groups: dict = {}          # proc name -> its tasks (rebuilt per parse)
         self._proc_nodes: dict = {}      # proc name -> TreeNode  (updated in place)
         self._task_nodes: dict = {}      # task hash -> TreeNode
         self._files: list[Path] = []     # entries backing the #files list
@@ -494,6 +497,8 @@ class NfScope(App):
         self.sub_title = str(path)
         self.view = "task"
         self._sig = None
+        self._log_stat = None
+        self._force_refresh = True
         self._built_filter = None
         self._shown = None
         self._tailer = None
@@ -510,8 +515,27 @@ class NfScope(App):
     def action_refresh(self) -> None:
         if self.log_file is None:           # no run loaded yet (picker is up)
             return
+        if len(self.screen_stack) > 1:      # the run picker is on top of us
+            return
+        # Skip the (whole-file) re-parse when .nextflow.log hasn't grown — the
+        # common steady state, and free for completed runs. Still refresh the
+        # pane so a live .command.log tail keeps updating.
+        try:
+            st = self.log_file.stat()
+            stat = (st.st_size, st.st_mtime)
+        except OSError:
+            stat = None
+        if stat is not None and stat == self._log_stat and not self._force_refresh:
+            self._render_current()
+            return
+        self._log_stat = stat
+        self._force_refresh = False
         self.tasks = parse_log(self.log_file)
         self._task_by_hash = {t.hash: t for t in self.tasks}
+        # Group once per parse (not per keypress): proc name -> its tasks.
+        self._groups = {}
+        for t in self._visible_tasks():
+            self._groups.setdefault(split_name(t.name)[0], []).append(t)
         sig = tuple((t.hash, t.status, t.exit) for t in self.tasks) + (self.failed_only,)
         if sig != self._sig:
             self._sig = sig
@@ -541,11 +565,7 @@ class NfScope(App):
         """Update the tree IN PLACE — update labels, append new nodes. Never
         clears, so the cursor, focus and scroll position are left untouched."""
         tree = self.query_one("#tasks", Tree)
-        groups: dict[str, list[Task]] = {}
-        for t in self._visible_tasks():
-            proc, _ = split_name(t.name)
-            groups.setdefault(proc, []).append(t)
-        for proc, tasks in groups.items():
+        for proc, tasks in self._groups.items():
             pnode = self._proc_nodes.get(proc)
             if pnode is None:
                 pnode = tree.root.add(_proc_label(proc, tasks), data=proc)
@@ -853,7 +873,10 @@ class NfScope(App):
 
     def _render_current(self) -> None:
         """Every tick / selection change: (re)draw the pane for the current view."""
-        log = self.query_one("#log", RichLog)
+        panes = self.query("#log")          # empty while another screen is up
+        if not panes:
+            return
+        log = panes.first(RichLog)
 
         # Run log: the whole .nextflow.log, independent of tree selection.
         if self.view == "run":
@@ -887,11 +910,13 @@ class NfScope(App):
             self._tailer = None
             log.clear()
             if node is not None and isinstance(node.data, str):
-                members = [x for x in self._visible_tasks()
-                           if split_name(x.name)[0] == node.data]
-                log.write(f"{node.data}   ({len(members)} tasks)")
-                for x in members:
-                    log.write(f"  {_task_label(x)}   [{x.hash}]")
+                members = self._groups.get(node.data, [])
+                lines = [f"{node.data}   ({len(members)} tasks)"]
+                lines += [f"  {_task_label(x)}   [{x.hash}]" for x in members[:40]]
+                if len(members) > 40:
+                    lines.append(f"  … and {len(members) - 40} more "
+                                 f"(expand the group to see them)")
+                log.write("\n".join(lines))     # one write, not N — stays snappy
 
     # ---- events / actions --------------------------------------------------
 
@@ -999,7 +1024,8 @@ class NfScope(App):
 
     def action_toggle_failed(self) -> None:
         self.failed_only = not self.failed_only
-        self._sig = None  # force a rebuild
+        self._sig = None            # force a rebuild
+        self._force_refresh = True  # re-group even though the log is unchanged
         self.action_refresh()
         n = sum(is_failed(t) for t in self.tasks)
         self.notify(f"showing {'failed only' if self.failed_only else 'all'} "
