@@ -209,8 +209,11 @@ def test_no_crash_with_picker_open(tmp_path):
         await pilot.pause()
         assert app.log_file is not None
         app.query_one("#tasks", Tree).focus()
-        await pilot.press("escape")               # back to the picker
-        await pilot.pause()
+        for _ in range(5):                        # esc walks run -> task -> picker
+            if isinstance(app.screen, RunPickerScreen):
+                break
+            await pilot.press("escape")
+            await pilot.pause()
         assert isinstance(app.screen, RunPickerScreen)
         app.action_refresh()                      # the exact crash scenario
         await pilot.pause()
@@ -236,6 +239,7 @@ def test_app_10k_loads_and_navigates(tmp_path):
     async def steps(app, pilot):
         tree = app.query_one("#tasks", Tree)
         assert sum(len(g.children) for g in tree.root.children) >= 9_900
+        app.view = "task"                      # measure task rendering per leaf
         # per-render work must stay tiny even at 10k
         worst = 0.0
         for lf in leaves(tree)[:40]:

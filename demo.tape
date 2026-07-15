@@ -1,9 +1,7 @@
-# nf-tui demo — a scripted terminal recording.
-# Render with:   vhs demo.tape      (produces demo.gif)
+# nf-tui demo — exploring a real nf-core/sarek run.
+# Render with:  vhs demo.tape   (produces demo.gif)
 
 Output demo.gif
-# Output demo.mp4        # uncomment for an MP4 instead
-
 Set FontSize 16
 Set Width 1500
 Set Height 850
@@ -11,69 +9,50 @@ Set Padding 14
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 55ms
 
-# --- setup (hidden): make sure nf-tui is on PATH ---
 Hide
 Type "export PATH=$HOME/.local/bin:$PATH; clear"
 Enter
 Show
 
-# --- launch: point it at a run directory ---
-Type "nf-tui /Users/stav/scratch"
+# Open a real nf-core/sarek run — defaults to the live run log + the task tree.
+Type "nf-tui /Users/stav/scratch/.nextflow.log"
 Sleep 600ms
 Enter
-Sleep 2.5s          # the run picker
+Sleep 4s
 
-# --- pick a run (first is highlighted) ---
-Enter
-Sleep 2s            # the live task tree, grouped by process
-
-# --- browse tasks; the task log below follows the selection ---
-Down 4
-Sleep 1.5s
-Down 4
+# Browse to a GATK task that produced a CRAM.
+Down 18
 Sleep 1.5s
 
-# --- switch log views ---
-Type "c"            # container log
-Sleep 1.3s
-Type "t"            # back to task log
-Sleep 1.3s
-
-# --- go to a GATK task that produced a CRAM (its task leaf) ---
-Down 10
+# Its task log …
+Type "t"
 Sleep 1.5s
 
-# --- files view; move to the BAM and open it (samtools decodes it) ---
+# … then its output files.
 Type "d"
-Sleep 2s            # files view (first file auto-opens)
-Down 2              # -> test-test_L1.sorted.bam
+Sleep 2s
+Down 4                 # -> test.md.cram
+Sleep 1s
 Enter
-Sleep 4s            # samtools view decodes it in the task's container
+Sleep 4s               # samtools decodes the CRAM in the task's own container
 
-# --- open the BAM full in `less` (lazy, real search/paging) ---
+# Open the CRAM full in less (lazy, real paging + search).
 Type "L"
-Sleep 4s            # docker + samtools | zless starts
-Space               # page forward through the alignments
+Sleep 4s
+Space
 Sleep 1.3s
 Space
 Sleep 1.3s
-Type "G"            # jump to the end
+Type "G"
 Sleep 1.3s
-Type "q"            # quit less -> back into nf-tui
+Type "q"
 Sleep 1.5s
 
-# --- full-screen the content pane ---
-Tab                 # focus the content pane
-Sleep 500ms
+# Full-screen the content pane, then restore.
 Type "z"
 Sleep 1.5s
-Escape              # restore the split
-Sleep 800ms
+Escape
+Sleep 1s
 
-# --- the whole run log ---
-Type "g"
-Sleep 2s
-
-# --- quit ---
 Type "q"
 Sleep 1s

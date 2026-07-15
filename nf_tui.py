@@ -43,7 +43,8 @@ from textual.widgets import Footer, Header, OptionList, RichLog, Tree
 from textual.widgets.option_list import Option
 
 REFRESH_SECONDS = 1.0
-RUNLOG_TAIL = 400_000   # chars of .nextflow.log to show at most
+RUNLOG_TAIL = 400_000   # chars of .nextflow.log to read for the run-log tail
+RUNLOG_MAX_LINES = 600  # lines of that tail to render (renders fast + reliably)
 VIEW_MAX_LINES = 2_000  # in-pane preview cap for host reads (text / gz)
 BAM_PREVIEW_LINES = 500 # smaller cap for container-decoded BAM/CRAM/BCF (faster)
 
@@ -495,7 +496,7 @@ class NfScope(App):
     def load_run(self, path: Path) -> None:
         self.log_file = path
         self.sub_title = str(path)
-        self.view = "task"
+        self.view = "task"         # task tree + the selected task's live log
         self._sig = None
         self._log_stat = None
         self._force_refresh = True
@@ -505,10 +506,16 @@ class NfScope(App):
         self._proc_nodes = {}
         self._task_nodes = {}
         self._tool_image_cache = {}
-        self.query_one("#tasks", Tree).clear()
+        tree = self.query_one("#tasks", Tree)
+        tree.clear()
         self.query_one("#files", OptionList).display = False
         self.action_refresh()
-        self.query_one("#tasks", Tree).focus()
+        # Select the first task so its log shows on open (not a blank pane).
+        for proc in tree.root.children:
+            if proc.children:
+                tree.move_cursor(proc.children[0])
+                break
+        tree.focus()
 
     # ---- task list (grouped tree) ------------------------------------------
 
@@ -623,6 +630,7 @@ class NfScope(App):
         """Fully redraw the log pane for a task in the current view."""
         log = self.query_one("#log", RichLog)
         log.auto_scroll = self.follow    # tailing views follow new lines
+        log.highlight = True             # small task logs — highlight is fine
         log.clear()
         self._log_header(log, t)
         self._tailer = Follower(Path(t.workdir) / ".command.log") if t.workdir else None
@@ -642,8 +650,9 @@ class NfScope(App):
                 log.write("(no task output yet — press c for the container log)")
 
     def _show_run_log(self, log: RichLog) -> None:
-        """Load the whole .nextflow.log into the pane, then keep tailing it."""
+        """Load the tail of .nextflow.log into the pane, then keep tailing it."""
         log.auto_scroll = self.follow
+        log.highlight = True
         log.clear()
         if not self.log_file.exists():
             self._tailer = None
@@ -651,10 +660,10 @@ class NfScope(App):
             return
         size = self.log_file.stat().st_size
         log.write(f"──────── {self.log_file.name}   (full run log, live) ────────")
-        if size > RUNLOG_TAIL:
-            log.write(f"(showing last {RUNLOG_TAIL // 1000} KB of {size // 1000} KB — "
-                      f"open the file for the complete history)")
-        log.write(_read_all(self.log_file, limit=RUNLOG_TAIL))
+        # Show a bounded tail so it renders fast and reliably in real terminals.
+        lines = _read_all(self.log_file, limit=RUNLOG_TAIL).splitlines()
+        for ln in lines[-RUNLOG_MAX_LINES:]:
+            log.write(ln)
         self._tailer = Follower(self.log_file)
         self._tailer.pos = size   # continue from the end for live appends
 
