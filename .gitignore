@@ -1,0 +1,21 @@
+# virtual envs
+.venv/
+venv/
+env/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# vhs render scratch (keep demo.gif, ignore mp4/frames)
+*.mp4
+frame_*.png
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/
