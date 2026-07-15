@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-nf-tui = "nf_scope:main"
+nf-tui = "nf_tui:main"
 nf-tui-web = "serve:main"
 
 [project.urls]
@@ -34,4 +34,4 @@ Repository = "https://github.com/stavgrossfeld/nf-tui"
 Issues = "https://github.com/stavgrossfeld/nf-tui/issues"
 
 [tool.setuptools]
-py-modules = ["nf_scope", "serve"]
+py-modules = ["nf_tui", "serve"]

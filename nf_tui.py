@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nf-scope — a real-time terminal browser for Nextflow tasks.
+"""nf-tui — a real-time terminal browser for Nextflow tasks.
 
 Point it at a Nextflow run directory (or a .nextflow.log). Tasks parsed
 from the log are shown as a live tree grouped by process; the pane below
@@ -17,8 +17,8 @@ esc steps back (content -> list -> tree -> run picker); o opens the work
 dir. Everything refreshes on a timer while a pipeline runs. With no path,
 nf-tui searches the current directory and lets you pick a run.
 
-    python nf_scope.py /path/to/run          # dir containing .nextflow.log
-    python nf_scope.py /path/to/.nextflow.log
+    python nf_tui.py /path/to/run          # dir containing .nextflow.log
+    python nf_tui.py /path/to/.nextflow.log
 
 Works on any completed or in-progress run. No plugin, no re-run required.
 """
@@ -398,7 +398,7 @@ class FileList(OptionList):
 
 
 class NfScope(App):
-    TITLE = "nf-scope"
+    TITLE = "nf-tui"
     CSS = """
     #tasks { height: 1fr; border: round $panel; }
     #tasks:focus { border: round $accent; }

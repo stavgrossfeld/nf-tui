@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve nf-scope in a web browser instead of the terminal.
+"""Serve nf-tui in a web browser instead of the terminal.
 
 Same app, same code — textual-serve runs the terminal TUI on the server and
 streams it to the browser over a websocket. No Seqera Platform involved.
@@ -35,7 +35,7 @@ def main() -> None:
 
     # Pre-flight: if there are no runs here, say so in the terminal instead of
     # serving an app that exits instantly and makes the browser reload-loop.
-    from nf_scope import gather_runs
+    from nf_tui import gather_runs
     if not target.is_file() and not gather_runs(target):
         sys.exit(
             f"nf-tui-web: no .nextflow.log found under {target}\n"
@@ -43,7 +43,7 @@ def main() -> None:
 
     command = (
         f"{shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(HERE / 'nf_scope.py'))} {shlex.quote(str(target))}"
+        f"{shlex.quote(str(HERE / 'nf_tui.py'))} {shlex.quote(str(target))}"
     )
     print(f"nf-tui web UI ({target}) on http://{args.host}:{args.port}  "
           f"(Ctrl-C to stop)")
