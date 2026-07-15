@@ -451,6 +451,7 @@ class NfScope(App):
         self._task_nodes: dict = {}      # task hash -> TreeNode
         self._files: list[Path] = []     # entries backing the #files list
         self._tool_image_cache: dict = {}  # binary -> image that provides it
+        self._runlog_pending: list = []  # run-log lines still to paint (batched)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -471,11 +472,19 @@ class NfScope(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.set_interval(REFRESH_SECONDS, self.action_refresh)  # live updates
+        self.set_interval(REFRESH_SECONDS, self._tick)  # live updates
         if self.log_file is not None:
             self.load_run(self.log_file)
         else:
             self._open_picker()             # multiple runs -> choose one first
+
+    def _tick(self) -> None:
+        # A transient error on the 1s timer (e.g. the log replaced mid-read on a
+        # busy filesystem) must never crash a long-running live session.
+        try:
+            self.action_refresh()
+        except Exception as e:                        # noqa: BLE001
+            self.notify(f"refresh error (continuing): {e}", severity="warning")
 
     # ---- run selection (a pushed screen, so it stays one app) --------------
 
@@ -651,21 +660,30 @@ class NfScope(App):
 
     def _show_run_log(self, log: RichLog) -> None:
         """Load the tail of .nextflow.log into the pane, then keep tailing it."""
-        log.auto_scroll = self.follow
+        log.auto_scroll = False   # stay at the top (the launch command / config)
         log.highlight = True
         log.clear()
         if not self.log_file.exists():
             self._tailer = None
+            self._runlog_pending = []
             log.write(f"({self.log_file} not found)")
             return
         size = self.log_file.stat().st_size
-        log.write(f"──────── {self.log_file.name}   (full run log, live) ────────")
-        # Show a bounded tail so it renders fast and reliably in real terminals.
-        lines = _read_all(self.log_file, limit=RUNLOG_TAIL).splitlines()
-        for ln in lines[-RUNLOG_MAX_LINES:]:
-            log.write(ln)
         self._tailer = Follower(self.log_file)
         self._tailer.pos = size   # continue from the end for live appends
+        header = f"──────── {self.log_file.name}   (full run log, live) ────────"
+        tail = _read_all(self.log_file, limit=RUNLOG_TAIL).splitlines()[-RUNLOG_MAX_LINES:]
+        content = header + "\n" + "\n".join(tail)
+        # Paint deferred (after the event handler) — a big synchronous write
+        # inside an event handler fails to render in real terminals.
+        self.call_after_refresh(lambda: self._paint_runlog(content))
+
+    def _paint_runlog(self, content: str) -> None:
+        if self.view != "run":
+            return
+        panes = self.query("#log")
+        if panes:
+            panes.first(RichLog).write(content)
 
     def _container_desc(self, t: Task) -> str:
         cont = task_container(t.workdir) if t.workdir else None

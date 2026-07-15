@@ -1,5 +1,7 @@
 # nf-tui
 
+[![CI](https://github.com/stavgrossfeld/nf-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/stavgrossfeld/nf-tui/actions/workflows/ci.yml)
+
 A terminal (and web) UI for browsing [Nextflow](https://www.nextflow.io/) runs —
 tasks, logs, and output files — parsed live from a run's `.nextflow.log`.
 No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
@@ -57,8 +59,42 @@ new run's `.nextflow.log` — updating live as tasks complete. Quitting nf-tui
 (`q`) leaves the pipeline running; it prints the PID and how to follow or stop
 it. (Equivalent by hand: `nextflow run … & nf-tui .nextflow.log`.)
 
-On an HPC, run it on the login node against a run on shared storage; for the
-web UI, forward the port: `ssh -L 8000:localhost:8000 login-node`.
+## On an HPC / remote server
+
+nf-tui only reads a run's files, so it works anywhere the run directory is
+reachable — no daemon, no root. Install it in your user space and run it on the
+login node against a run on shared storage (`/scratch`, `$WORK`, …):
+
+```bash
+# one-time, in your home (no admin needed)
+uv tool install git+https://github.com/stavgrossfeld/nf-tui
+# or: pip install --user git+https://github.com/stavgrossfeld/nf-tui
+
+nf-tui /scratch/$USER/my-run          # watch a run over SSH
+```
+
+**Tunnel the web UI to your laptop.** Serve it on the login node and forward the
+port — you get the full UI in a local browser, no X11:
+
+```bash
+# on the login node (inside tmux/screen so it survives disconnects):
+nf-tui-web /scratch/$USER/my-run --host 127.0.0.1 --port 8000
+
+# on your laptop:
+ssh -L 8000:localhost:8000 you@login-node
+#   then open http://localhost:8000
+```
+
+Notes for clusters:
+
+- **Singularity / Apptainer** are supported — nf-tui reuses each task's own
+  container invocation from `.command.run` (image + binds), so BAM/CRAM viewing
+  works with whatever engine the pipeline used. The TUI itself needs no
+  container engine; only viewing BAM/CRAM does.
+- **Shared filesystems** (Lustre/GPFS/NFS) cache file metadata, so live updates
+  may lag a few seconds behind the pipeline — that's the filesystem, not nf-tui.
+- **`L` (external `zless`)** works in the terminal, not the browser; use the
+  in-pane preview in the web UI.
 
 ## Keys
 
