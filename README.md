@@ -46,7 +46,16 @@ This puts `nf-tui` and `nf-tui-web` on your PATH. (Plain `pip install .` works t
 nf-tui                       # search the current directory, pick a run
 nf-tui /path/to/run          # open a run directory (or a .nextflow.log)
 nf-tui-web /path/to/run      # same UI in a browser (http://localhost:8000)
+
+# launch a pipeline AND watch it live, in one step:
+nf-tui-run nf-core/sarek -profile test,docker --outdir results
 ```
+
+`nf-tui-run` passes its arguments to `nextflow run`, starts it in the
+background (console output goes to `.nf-tui-run.out`), and opens nf-tui on the
+new run's `.nextflow.log` — updating live as tasks complete. Quitting nf-tui
+(`q`) leaves the pipeline running; it prints the PID and how to follow or stop
+it. (Equivalent by hand: `nextflow run … & nf-tui .nextflow.log`.)
 
 On an HPC, run it on the login node against a run on shared storage; for the
 web UI, forward the port: `ssh -L 8000:localhost:8000 login-node`.

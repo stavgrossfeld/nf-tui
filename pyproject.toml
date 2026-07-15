@@ -30,6 +30,7 @@ dev = ["pytest>=8"]
 [project.scripts]
 nf-tui = "nf_tui:main"
 nf-tui-web = "serve:main"
+nf-tui-run = "run:main"
 
 [project.urls]
 Homepage = "https://github.com/stavgrossfeld/nf-tui"
@@ -37,7 +38,7 @@ Repository = "https://github.com/stavgrossfeld/nf-tui"
 Issues = "https://github.com/stavgrossfeld/nf-tui/issues"
 
 [tool.setuptools]
-py-modules = ["nf_tui", "serve"]
+py-modules = ["nf_tui", "serve", "run"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
