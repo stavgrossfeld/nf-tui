@@ -10,7 +10,7 @@ shows, for the selected task, one of:
   d  files         — the work-dir outputs; pick one to preview it, opened
                      with a tool from the task's container (samtools for
                      BAM/CRAM, etc.) using the task's own mounts so the
-                     reference resolves. L opens it full in `zless`.
+                     reference resolves. L opens it full in `less`.
   g  run log       — the whole .nextflow.log, tailed live
 
 esc steps back (content -> list -> tree -> run picker); o opens the work
@@ -146,13 +146,16 @@ def _read_all(path: Path, limit: int = 20000) -> str:
 
 
 def pager_bin() -> str | None:
-    """`zless` (pages .gz too) if present, else plain `less`. Neither is
-    guaranteed on a bare cluster image, so callers must handle None rather
-    than exec a missing command and flash the screen."""
-    for cmd in ("zless", "less"):
-        if shutil.which(cmd):
-            return cmd
-    return None
+    """`less`, or None if it isn't installed (callers must not exec a missing
+    command and flash the screen).
+
+    Deliberately not `zless`: it runs `gzip -cdfq file | less`, which makes the
+    input a pipe. less cannot seek in a pipe, so `+G` has to read the whole file
+    before painting anything — on a 138MB .nextflow.log that never finished,
+    versus 0.02s for less on the file directly. Only real .gz needs decompressing
+    (see _pager_command), and a run log is never gzipped.
+    """
+    return "less" if shutil.which("less") else None
 
 
 def read_back(path: Path, end: int, max_bytes: int = RUNLOG_CHUNK,
@@ -965,12 +968,15 @@ class NfScope(App):
         self.call_from_thread(self._viewer_done, out, BAM_PREVIEW_LINES)
 
     def _pager_command(self, t: Task, p: Path, pager: str) -> str:
-        """Shell string that pages a file lazily (zless also handles gz).
-        BAM/CRAM/BCF are decoded by the task's container tool, then piped to
-        the pager; everything else is opened straight on the host."""
+        """Shell string that pages a file lazily. BAM/CRAM/BCF are decoded by
+        the task's container tool and piped to the pager; gz is decompressed
+        through a pipe; plain files are handed to the pager directly so it can
+        seek them instead of slurping the whole thing."""
         tool = decode_tool(p)
-        if tool is None:                          # gz or text -> host pager
-            return f"{pager} -R {shlex.quote(str(p))}"
+        if tool is None:
+            if is_gzip(p):                        # must decompress; pipe is forced
+                return f"gzip -cdfq {shlex.quote(str(p))} 2>&1 | {pager} -R"
+            return f"{pager} -R {shlex.quote(str(p))}"   # seekable: opens instantly
         spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
         if spec is None:
             return f"echo '(no container found to decode {p.name})' | {pager} -R"
@@ -990,7 +996,7 @@ class NfScope(App):
                 return
             pager = pager_bin()
             if pager is None:
-                self.notify("no less/zless on PATH to page the run log")
+                self.notify("no `less` on PATH to page the run log")
                 return
             with self.suspend():
                 subprocess.run(["sh", "-c",
@@ -1008,7 +1014,7 @@ class NfScope(App):
             return
         pager = pager_bin()
         if pager is None:
-            self.notify("no less/zless on PATH to page this file")
+            self.notify("no `less` on PATH to page this file")
             return
         # Only BAM/CRAM/BCF need the container; check its image is present.
         tool = decode_tool(p)

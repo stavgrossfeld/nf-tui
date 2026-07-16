@@ -17,11 +17,11 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 - **Run log** — opens on it, at the tail, where a run says how it went; a live
   run follows new lines as they land. Scroll up and earlier lines backfill a
   chunk at a time, back to the first line of the run. `L` pages the whole file
-  in `zless`.
+  in `less`.
 - **Output files** — browse a task's work-dir files with sizes; preview text
   and gzip on the host, and **BAM / CRAM / BCF decoded with `samtools` /
   `bcftools` from the task's own container** (reusing its mounts, so the
-  reference genome resolves). Press `L` to open any file full in `zless`.
+  reference genome resolves). Press `L` to open any file full in `less`.
 - **Run picker** — with no path, it finds every run under a directory and
   lets you choose (and hop between runs without quitting).
 - **Full-screen any pane**, filter to failed tasks, open a task's work dir.
@@ -96,7 +96,7 @@ Notes for clusters:
   container engine; only viewing BAM/CRAM does.
 - **Shared filesystems** (Lustre/GPFS/NFS) cache file metadata, so live updates
   may lag a few seconds behind the pipeline — that's the filesystem, not nf-tui.
-- **`L` (external `zless`)** works in the terminal, not the browser; use the
+- **`L` (external `less`)** works in the terminal, not the browser; use the
   in-pane preview in the web UI.
 
 ## Keys
@@ -106,7 +106,7 @@ Notes for clusters:
 | `↑`/`↓`, `→`/`←` | move / expand in the task tree |
 | `t` / `c` / `g` | task log / container log / full run log |
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
-| `L` | open the selected file — or the whole run log — in `zless` (lazy paging + search) |
+| `L` | open the selected file — or the whole run log — in `less` (lazy paging + search) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |
 | `z` | full-screen the focused pane (`z`/`esc` to restore) |
 | `Tab` | cycle focus between panes |
@@ -125,7 +125,7 @@ the exact `docker`/`singularity` invocation from each task's `.command.run`
 task's own container doesn't ship the tool.
 
 Requires Python ≥ 3.10. Viewing BAM/CRAM needs the run's container images
-present locally (Docker/Podman/Singularity). `L` (external `zless`) works in the
+present locally (Docker/Podman/Singularity). `L` (external `less`) works in the
 terminal, not the browser.
 
 ## Development

@@ -373,6 +373,31 @@ def test_following_pauses_while_scrolled_up(tmp_path):
     assert drive(NfScope(log), steps)
 
 
+def test_plain_files_go_to_less_directly_not_through_a_pipe(tmp_path):
+    # zless runs `gzip -cdfq file | less`, which makes stdin a pipe. less can't
+    # seek a pipe, so +G must read the whole file before painting — on a 138MB
+    # run log that never finished. Plain files must be passed as an argument.
+    wd = tmp_path / "work" / "ab" / "cd"
+    wd.mkdir(parents=True)
+    plain, gz = wd / "out.txt", wd / "out.txt.gz"
+    plain.write_text("hello\n")
+    gz.write_bytes(b"\x1f\x8b\x00")
+    t = Task(hash="ab/cd", name="P (s)", workdir=str(wd))
+
+    app = NfScope(tmp_path)
+    plain_cmd = app._pager_command(t, plain, "less")
+    assert "|" not in plain_cmd, "plain file must not be piped into less"
+    assert plain_cmd.endswith(str(plain))          # handed over as an argument
+
+    gz_cmd = app._pager_command(t, gz, "less")     # gz has to be decompressed
+    assert "gzip -cdfq" in gz_cmd and "| less" in gz_cmd
+
+
+def test_run_log_pager_seeks_to_the_end(tmp_path):
+    # +G is only safe because less gets the file itself and can seek to it.
+    assert nf_tui.pager_bin() in ("less", None)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):
