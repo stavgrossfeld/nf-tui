@@ -222,6 +222,42 @@ def test_no_crash_with_picker_open(tmp_path):
     assert drive(NfScope(tmp_path), steps)
 
 
+# ---- run log on load -------------------------------------------------------
+
+def test_run_log_shows_on_load_without_a_keypress(tmp_path):
+    # Opening a run must land on the run log already painted — no `g` needed.
+    log = make_run(tmp_path, n_tasks=30, n_procs=3)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        assert app.view == "run"
+        pane = app.query_one("#log", RichLog)
+        assert len(pane.lines) > 1, "run log pane is empty on load"
+        assert "full run log" in "\n".join(str(x) for x in pane.lines)
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_completed_run_starts_at_top_live_run_follows(tmp_path):
+    log = make_run(tmp_path, n_tasks=30, n_procs=3)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        if app._run_is_live():          # fresh mtime -> follow the tail
+            assert pane.auto_scroll and pane.scroll_y == pane.max_scroll_y
+        else:                           # finished -> start at the top
+            assert not pane.auto_scroll and pane.scroll_y == 0
+        return True
+
+    assert drive(NfScope(log), steps)          # just written: live -> follows
+
+    old = time.time() - 3600                   # age it past the live window
+    os.utime(log, (old, old))
+    assert drive(NfScope(log), steps)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):

@@ -30,6 +30,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -505,7 +506,7 @@ class NfScope(App):
     def load_run(self, path: Path) -> None:
         self.log_file = path
         self.sub_title = str(path)
-        self.view = "task"         # task tree + the selected task's live log
+        self.view = "run"          # open on the run log (follows the tail if live)
         self._sig = None
         self._log_stat = None
         self._force_refresh = True
@@ -658,32 +659,50 @@ class NfScope(App):
             else:
                 log.write("(no task output yet — press c for the container log)")
 
+    def _run_is_live(self) -> bool:
+        """A run is live if a task is still running/submitted, or its log was
+        written in the last ~20s (Nextflow keeps appending while it runs)."""
+        if any(t.status.upper() in ("RUNNING", "SUBMITTED") for t in self.tasks):
+            return True
+        try:
+            return (time.time() - self.log_file.stat().st_mtime) < 20
+        except OSError:
+            return False
+
     def _show_run_log(self, log: RichLog) -> None:
-        """Load the tail of .nextflow.log into the pane, then keep tailing it."""
-        log.auto_scroll = False   # stay at the top (the launch command / config)
+        """Load the tail of .nextflow.log into the pane. Follow the tail if the
+        run is live; otherwise sit at the top (the launch command / config)."""
         log.highlight = True
         log.clear()
         if not self.log_file.exists():
             self._tailer = None
-            self._runlog_pending = []
             log.write(f"({self.log_file} not found)")
             return
         size = self.log_file.stat().st_size
         self._tailer = Follower(self.log_file)
         self._tailer.pos = size   # continue from the end for live appends
-        header = f"──────── {self.log_file.name}   (full run log, live) ────────"
+        follow = self.follow and self._run_is_live()
+        state = "live — following" if follow else "complete"
+        header = f"──────── {self.log_file.name}   (full run log, {state}) ────────"
         tail = _read_all(self.log_file, limit=RUNLOG_TAIL).splitlines()[-RUNLOG_MAX_LINES:]
         content = header + "\n" + "\n".join(tail)
         # Paint deferred (after the event handler) — a big synchronous write
         # inside an event handler fails to render in real terminals.
-        self.call_after_refresh(lambda: self._paint_runlog(content))
+        self.call_after_refresh(lambda: self._paint_runlog(content, follow))
 
-    def _paint_runlog(self, content: str) -> None:
+    def _paint_runlog(self, content: str, follow: bool) -> None:
         if self.view != "run":
             return
         panes = self.query("#log")
-        if panes:
-            panes.first(RichLog).write(content)
+        if not panes:
+            return
+        log = panes.first(RichLog)
+        # Set auto_scroll *before* writing: a write with auto_scroll on pins the
+        # pane to the bottom and would override the scroll_home below.
+        log.auto_scroll = follow
+        log.write(content)
+        # Live run -> tail (follow new lines); completed -> start at the top.
+        (log.scroll_end if follow else log.scroll_home)(animate=False)
 
     def _container_desc(self, t: Task) -> str:
         cont = task_container(t.workdir) if t.workdir else None
