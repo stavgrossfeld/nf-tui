@@ -44,8 +44,9 @@ from textual.widgets import Footer, Header, OptionList, RichLog, Tree
 from textual.widgets.option_list import Option
 
 REFRESH_SECONDS = 1.0
-RUNLOG_TAIL = 400_000   # chars of .nextflow.log to read for the run-log tail
-RUNLOG_MAX_LINES = 600  # lines of that tail to render (renders fast + reliably)
+RUNLOG_TAIL = 400_000   # bytes of .nextflow.log to read for the initial tail
+RUNLOG_MAX_LINES = 600  # lines loaded per step (renders fast + reliably)
+RUNLOG_CHUNK = 200_000  # bytes read per backfill step when scrolling up
 VIEW_MAX_LINES = 2_000  # in-pane preview cap for host reads (text / gz)
 BAM_PREVIEW_LINES = 500 # smaller cap for container-decoded BAM/CRAM/BCF (faster)
 
@@ -141,6 +142,37 @@ def _read_all(path: Path, limit: int = 20000) -> str:
     except OSError as e:
         return f"[cannot read {path.name}: {e}]"
     return data[-limit:] if len(data) > limit else data
+
+
+def read_back(path: Path, end: int, max_bytes: int = RUNLOG_CHUNK,
+              max_lines: int = RUNLOG_MAX_LINES) -> tuple[int, list[str]]:
+    """Read the chunk of `path` that ends at byte offset `end`, newest-last.
+
+    Returns (start, lines) where `start` is the byte offset of the first line —
+    feed it back as `end` to walk further up the file. Only whole lines are
+    returned: a partial line at the front of the window is dropped and skipped
+    over in `start`. All slicing is done in bytes so `start` stays exact even
+    when decoding replaces malformed characters.
+    """
+    start = max(0, end - max_bytes)
+    try:
+        with path.open("rb") as f:
+            f.seek(start)
+            buf = f.read(end - start)
+    except OSError:
+        return end, []
+    if start > 0:                       # first line is probably cut in half
+        nl = buf.find(b"\n")
+        if nl == -1:
+            return end, []
+        start += nl + 1
+        buf = buf[nl + 1:]
+    parts = buf.split(b"\n")
+    if len(parts) > max_lines:           # keep the newest `max_lines` of them
+        skipped = b"\n".join(parts[:len(parts) - max_lines]) + b"\n"
+        start += len(skipped)
+        buf = buf[len(skipped):]
+    return start, buf.decode("utf-8", errors="replace").splitlines()
 
 
 # Container-engine chatter Nextflow captures into .command.log/.err while
@@ -378,6 +410,14 @@ class LogView(RichLog):
         Binding("end", "scroll_end", "Bottom", show=False),
     ]
 
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        # Near the top of the run log? Pull in the previous chunk of the file.
+        if new_value <= 2:
+            backfill = getattr(self.app, "_runlog_backfill", None)
+            if backfill is not None:
+                backfill()
+
 
 class FileList(OptionList):
     """File list whose paging keys scroll the sibling content pane, so you can
@@ -452,7 +492,9 @@ class NfScope(App):
         self._task_nodes: dict = {}      # task hash -> TreeNode
         self._files: list[Path] = []     # entries backing the #files list
         self._tool_image_cache: dict = {}  # binary -> image that provides it
-        self._runlog_pending: list = []  # run-log lines still to paint (batched)
+        self._runlog_lines: list[str] = []  # run-log lines currently loaded
+        self._runlog_start: int = 0      # byte offset of the first loaded line
+        self._backfilling = False        # guard: backfill moves scroll_y itself
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -669,12 +711,24 @@ class NfScope(App):
         except OSError:
             return False
 
+    def _runlog_header(self) -> str:
+        """Header line: says where in the file the loaded window starts, so the
+        top of the pane is never mistaken for the top of the log."""
+        follow = self.follow and self._run_is_live()
+        state = "live — following" if follow else "complete"
+        where = ("from the start" if self._runlog_start <= 0
+                 else "scroll up to load earlier lines")
+        return (f"──────── {self.log_file.name}   (full run log, {state} — "
+                f"{where}; L to open it all in less) ────────")
+
     def _show_run_log(self, log: RichLog) -> None:
         """Load the tail of .nextflow.log into the pane, positioned at the end —
-        where a run says how it went. Scroll up for the preceding lines; a live
-        run keeps following new ones."""
+        where a run says how it went. Scrolling up backfills earlier lines a
+        chunk at a time; a live run keeps following new ones."""
         log.highlight = True
         log.clear()
+        self._runlog_lines = []
+        self._runlog_start = 0
         if not self.log_file.exists():
             self._tailer = None
             log.write(f"({self.log_file} not found)")
@@ -683,13 +737,9 @@ class NfScope(App):
         self._tailer = Follower(self.log_file)
         self._tailer.pos = size   # continue from the end for live appends
         follow = self.follow and self._run_is_live()
-        state = "live — following" if follow else "complete"
-        # Only the last RUNLOG_MAX_LINES are loaded, so say so — the top of the
-        # pane is not the top of the file.
-        header = (f"──────── {self.log_file.name}   (full run log, {state} — "
-                  f"last {RUNLOG_MAX_LINES} lines) ────────")
-        tail = _read_all(self.log_file, limit=RUNLOG_TAIL).splitlines()[-RUNLOG_MAX_LINES:]
-        content = header + "\n" + "\n".join(tail)
+        self._runlog_start, self._runlog_lines = read_back(
+            self.log_file, size, max_bytes=RUNLOG_TAIL)
+        content = self._runlog_header() + "\n" + "\n".join(self._runlog_lines)
         # Paint deferred (after the event handler) — a big synchronous write
         # inside an event handler fails to render in real terminals.
         self.call_after_refresh(lambda: self._paint_runlog(content, follow))
@@ -703,10 +753,40 @@ class NfScope(App):
         log = panes.first(RichLog)
         log.auto_scroll = follow      # only a live run chases new lines
         log.write(content)
-        # Always open at the end: that's where a run reports how it went. The
-        # pane holds only the last RUNLOG_MAX_LINES, so the top of it is an
-        # arbitrary point, not the launch command — scroll up from here.
+        # Always open at the end: that's where a run reports how it went.
         log.scroll_end(animate=False)
+
+    def _runlog_backfill(self) -> None:
+        """Scrolled near the top: prepend the previous chunk of the file.
+
+        RichLog can only append, so the pane is rewritten with the older lines
+        in front and the viewport shifted down by however many were added —
+        which keeps the line you were reading exactly where it was.
+        """
+        if self.view != "run" or self._backfilling or self.log_file is None:
+            return
+        if self._runlog_start <= 0:       # already at the top of the file
+            return
+        self._backfilling = True
+        try:
+            start, older = read_back(self.log_file, self._runlog_start)
+            if not older:
+                self._runlog_start = start
+                return
+            self._runlog_start = start
+            self._runlog_lines = older + self._runlog_lines
+            panes = self.query("#log")
+            if not panes:
+                return
+            log = panes.first(RichLog)
+            keep, auto = log.scroll_y, log.auto_scroll
+            log.auto_scroll = False       # a rewrite must not jump to the end
+            log.clear()
+            log.write(self._runlog_header() + "\n" + "\n".join(self._runlog_lines))
+            log.scroll_y = keep + len(older)
+            log.auto_scroll = auto
+        finally:
+            self._backfilling = False
 
     def _container_desc(self, t: Task) -> str:
         cont = task_container(t.workdir) if t.workdir else None
@@ -891,8 +971,17 @@ class NfScope(App):
         return " ".join(shlex.quote(x) for x in parts) + " 2>&1 | zless -R"
 
     def action_pager(self) -> None:
+        # Run log: page the whole .nextflow.log on the host, opened at the end
+        # (+G) to match the pane. No cap here — less pages it lazily.
+        if self.view == "run":
+            if self.log_file is None or not self.log_file.exists():
+                return
+            with self.suspend():
+                subprocess.run(["sh", "-c",
+                                f"zless -R +G {shlex.quote(str(self.log_file))}"])
+            return
         if self.view != "files":
-            self.notify("switch to the files view (d) first")
+            self.notify("switch to the files view (d), or g for the run log")
             return
         files = self.query_one("#files", OptionList)
         idx = files.highlighted
@@ -944,8 +1033,12 @@ class NfScope(App):
                 self._shown = ("run",)
                 self._show_run_log(log)
             elif self.follow and self._tailer is not None:
-                for line in self._tailer.read_new().splitlines():
+                new = self._tailer.read_new().splitlines()
+                for line in new:
                     log.write(line)     # raw, unfiltered
+                # Keep the backing list in step, or a backfill rewrite would
+                # drop the lines that arrived while we were following.
+                self._runlog_lines.extend(new)
             return
 
         # Task / container / files view: follow the tree selection.

@@ -13,8 +13,11 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 - **Live task tree** grouped by process, with per-process progress and
   status (`✓` / `✗` / running), updated on a timer while a pipeline runs.
 - **Per-task logs** — task output (`.command.log` with container-pull and
-  JVM/Fontconfig noise filtered out), the raw container log, or the whole
-  `.nextflow.log`.
+  JVM/Fontconfig noise filtered out) or the raw container log.
+- **Run log** — opens on it, at the tail, where a run says how it went; a live
+  run follows new lines as they land. Scroll up and earlier lines backfill a
+  chunk at a time, back to the first line of the run. `L` pages the whole file
+  in `zless`.
 - **Output files** — browse a task's work-dir files with sizes; preview text
   and gzip on the host, and **BAM / CRAM / BCF decoded with `samtools` /
   `bcftools` from the task's own container** (reusing its mounts, so the
@@ -103,7 +106,7 @@ Notes for clusters:
 | `↑`/`↓`, `→`/`←` | move / expand in the task tree |
 | `t` / `c` / `g` | task log / container log / full run log |
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
-| `L` | open the selected file full in `zless` (lazy paging + search) |
+| `L` | open the selected file — or the whole run log — in `zless` (lazy paging + search) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |
 | `z` | full-screen the focused pane (`z`/`esc` to restore) |
 | `Tab` | cycle focus between panes |

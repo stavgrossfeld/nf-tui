@@ -17,7 +17,7 @@ from pathlib import Path
 import nf_tui
 from generate_run import make_run
 from nf_tui import (NfScope, RunPickerScreen, Task, is_failed,
-                    parse_container_run, parse_log, split_name)
+                    parse_container_run, parse_log, read_back, split_name)
 from textual.widgets import OptionList, RichLog, Tree
 
 
@@ -261,6 +261,75 @@ def test_run_log_opens_at_the_end_and_scrolls_up(tmp_path):
     old = time.time() - 3600                   # age it past the live window
     os.utime(log, (old, old))
     assert drive(NfScope(log), steps)          # finished: at end, not following
+
+
+# ---- run log backfill ------------------------------------------------------
+
+def test_read_back_walks_a_file_exactly(tmp_path):
+    # Byte accounting must be exact, or backfill would drop or duplicate lines.
+    # Includes a non-ASCII line: decoding must not desync the byte offsets.
+    p = tmp_path / ".nextflow.log"
+    want = [f"line {i} — ünïcode" if i % 50 == 0 else f"line {i} " + "x" * (i % 40)
+            for i in range(2000)]
+    p.write_text("\n".join(want) + "\n")
+
+    end, got, steps = p.stat().st_size, [], 0
+    while end > 0:
+        start, lines = read_back(p, end, max_bytes=3_000, max_lines=100)
+        assert lines, "backfill stalled before reaching the top"
+        got = lines + got
+        end = start
+        steps += 1
+    assert steps > 1, "test should need several chunks to be meaningful"
+    assert got == want                      # reconstructed the file exactly
+
+
+def test_read_back_on_a_missing_file_is_empty(tmp_path):
+    assert read_back(tmp_path / "nope.log", 100) == (100, [])
+
+
+def test_scrolling_up_backfills_to_the_top_of_the_log(tmp_path):
+    # Must exceed RUNLOG_MAX_LINES, or the whole log loads at once and this
+    # would pass without ever backfilling.
+    log = make_run(tmp_path, n_tasks=3_000, n_procs=10)
+    want = log.read_bytes().decode("utf-8", errors="replace").splitlines()
+    assert len(want) > nf_tui.RUNLOG_MAX_LINES
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        assert len(app._runlog_lines) < len(want), "log should start partly loaded"
+        for _ in range(60):                 # scroll up until the top is loaded
+            pane.scroll_home(animate=False)
+            await pilot.pause()
+            if app._runlog_start == 0:
+                break
+        assert app._runlog_start == 0, "never reached the top of the file"
+        assert app._runlog_lines == want    # every line, in order, no gaps
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_backfill_keeps_the_viewport_on_the_same_line(tmp_path):
+    log = make_run(tmp_path, n_tasks=3_000, n_procs=10)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        before = len(app._runlog_lines)
+        pane.scroll_home(animate=False)
+        await pilot.pause()
+        anchor = str(pane.lines[int(pane.scroll_y)])
+        added = len(app._runlog_lines) - before
+        assert added > 0, "scrolling to the top should have backfilled"
+        # the viewport shifted down by exactly the prepended lines, so the line
+        # being read stays put rather than jumping
+        assert pane.scroll_y == added
+        assert str(pane.lines[int(pane.scroll_y)]) == anchor
+        return True
+
+    assert drive(NfScope(log), steps)
 
 
 # ---- scale -----------------------------------------------------------------
