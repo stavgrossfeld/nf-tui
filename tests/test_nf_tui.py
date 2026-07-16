@@ -239,23 +239,28 @@ def test_run_log_shows_on_load_without_a_keypress(tmp_path):
     assert drive(NfScope(log), steps)
 
 
-def test_completed_run_starts_at_top_live_run_follows(tmp_path):
+def test_run_log_opens_at_the_end_and_scrolls_up(tmp_path):
+    # The pane holds only the last RUNLOG_MAX_LINES, so its top is an arbitrary
+    # point, not the launch command. Both live and finished runs open at the end
+    # (where the outcome is); only a live run auto-follows new lines.
     log = make_run(tmp_path, n_tasks=30, n_procs=3)
 
     async def steps(app, pilot):
         await pilot.pause()
         pane = app.query_one("#log", RichLog)
-        if app._run_is_live():          # fresh mtime -> follow the tail
-            assert pane.auto_scroll and pane.scroll_y == pane.max_scroll_y
-        else:                           # finished -> start at the top
-            assert not pane.auto_scroll and pane.scroll_y == 0
+        assert pane.scroll_y == pane.max_scroll_y, "run log should open at the end"
+        assert pane.auto_scroll == app._run_is_live()
+        # and you can scroll back up through the loaded tail
+        pane.scroll_up(animate=False)
+        await pilot.pause()
+        assert pane.scroll_y < pane.max_scroll_y
         return True
 
     assert drive(NfScope(log), steps)          # just written: live -> follows
 
     old = time.time() - 3600                   # age it past the live window
     os.utime(log, (old, old))
-    assert drive(NfScope(log), steps)
+    assert drive(NfScope(log), steps)          # finished: at end, not following
 
 
 # ---- scale -----------------------------------------------------------------
