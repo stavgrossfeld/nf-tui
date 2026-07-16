@@ -332,6 +332,47 @@ def test_backfill_keeps_the_viewport_on_the_same_line(tmp_path):
     assert drive(NfScope(log), steps)
 
 
+def test_following_pauses_while_scrolled_up(tmp_path):
+    # A live run appends every second. Scrolling up to read must not be yanked
+    # back to the bottom by arriving lines; returning to the bottom resumes.
+    log = make_run(tmp_path, n_tasks=3_000, n_procs=10)
+    os.utime(log, None)                       # fresh mtime -> live
+
+    def text(strip):
+        return "".join(seg.text for seg in strip)
+
+    def append(line):
+        with log.open("a") as f:
+            f.write(line + "\n")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        assert app._run_is_live() and pane.auto_scroll
+
+        pane.scroll_up(animate=False)
+        pane.scroll_up(animate=False)
+        await pilot.pause()
+        parked = pane.scroll_y
+        for i in range(3):
+            append(f"~> new line {i}")
+            app.action_refresh()
+            await pilot.pause()
+        assert pane.scroll_y == parked, "following yanked the viewport back down"
+        assert any("new line 2" in text(s) for s in pane.lines), "lines still collect"
+
+        pane.scroll_end(animate=False)        # back to the bottom -> follow again
+        await pilot.pause()
+        append("~> newest line")
+        app.action_refresh()
+        await pilot.pause()
+        assert pane.scroll_y == pane.max_scroll_y
+        assert "newest line" in text(pane.lines[-1])
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):

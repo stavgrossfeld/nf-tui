@@ -28,6 +28,7 @@ import argparse
 import gzip
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -142,6 +143,16 @@ def _read_all(path: Path, limit: int = 20000) -> str:
     except OSError as e:
         return f"[cannot read {path.name}: {e}]"
     return data[-limit:] if len(data) > limit else data
+
+
+def pager_bin() -> str | None:
+    """`zless` (pages .gz too) if present, else plain `less`. Neither is
+    guaranteed on a bare cluster image, so callers must handle None rather
+    than exec a missing command and flash the screen."""
+    for cmd in ("zless", "less"):
+        if shutil.which(cmd):
+            return cmd
+    return None
 
 
 def read_back(path: Path, end: int, max_bytes: int = RUNLOG_CHUNK,
@@ -779,12 +790,13 @@ class NfScope(App):
             if not panes:
                 return
             log = panes.first(RichLog)
-            keep, auto = log.scroll_y, log.auto_scroll
-            log.auto_scroll = False       # a rewrite must not jump to the end
+            keep = log.scroll_y
+            # Leave auto_scroll off: we are far from the bottom now, and the
+            # refresh tick turns following back on when you return there.
+            log.auto_scroll = False
             log.clear()
             log.write(self._runlog_header() + "\n" + "\n".join(self._runlog_lines))
             log.scroll_y = keep + len(older)
-            log.auto_scroll = auto
         finally:
             self._backfilling = False
 
@@ -952,23 +964,23 @@ class NfScope(App):
             out = [f"(error running viewer: {e})"]
         self.call_from_thread(self._viewer_done, out, BAM_PREVIEW_LINES)
 
-    def _pager_command(self, t: Task, p: Path) -> str:
-        """Shell string that pages a file with `zless` (lazy, handles gz + text).
+    def _pager_command(self, t: Task, p: Path, pager: str) -> str:
+        """Shell string that pages a file lazily (zless also handles gz).
         BAM/CRAM/BCF are decoded by the task's container tool, then piped to
-        zless; everything else is opened straight on the host."""
+        the pager; everything else is opened straight on the host."""
         tool = decode_tool(p)
-        if tool is None:                          # gz or text -> host zless
-            return f"zless -R {shlex.quote(str(p))}"
+        if tool is None:                          # gz or text -> host pager
+            return f"{pager} -R {shlex.quote(str(p))}"
         spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
         if spec is None:
-            return f"echo '(no container found to decode {p.name})' | zless -R"
+            return f"echo '(no container found to decode {p.name})' | {pager} -R"
         engine, mounts, image = spec
         # No -i: the container must NOT read the terminal, or it steals the
-        # keystrokes meant for zless (samtools reads the file, not stdin).
+        # keystrokes meant for the pager (samtools reads the file, not stdin).
         inner = f"cd {shlex.quote(t.workdir)} && exec {tool} {shlex.quote(str(p))}"
         parts = ([engine, "run", "--rm"] + mounts
                  + ["-w", t.workdir, image, "sh", "-c", inner])
-        return " ".join(shlex.quote(x) for x in parts) + " 2>&1 | zless -R"
+        return " ".join(shlex.quote(x) for x in parts) + f" 2>&1 | {pager} -R"
 
     def action_pager(self) -> None:
         # Run log: page the whole .nextflow.log on the host, opened at the end
@@ -976,9 +988,13 @@ class NfScope(App):
         if self.view == "run":
             if self.log_file is None or not self.log_file.exists():
                 return
+            pager = pager_bin()
+            if pager is None:
+                self.notify("no less/zless on PATH to page the run log")
+                return
             with self.suspend():
                 subprocess.run(["sh", "-c",
-                                f"zless -R +G {shlex.quote(str(self.log_file))}"])
+                                f"{pager} -R +G {shlex.quote(str(self.log_file))}"])
             return
         if self.view != "files":
             self.notify("switch to the files view (d), or g for the run log")
@@ -990,6 +1006,10 @@ class NfScope(App):
         t, p = self._selected(), self._files[idx]
         if t is None:
             return
+        pager = pager_bin()
+        if pager is None:
+            self.notify("no less/zless on PATH to page this file")
+            return
         # Only BAM/CRAM/BCF need the container; check its image is present.
         tool = decode_tool(p)
         if tool is not None:
@@ -1000,8 +1020,8 @@ class NfScope(App):
                 if chk.returncode != 0:
                     self.notify(f"image not present — {spec[0]} pull {spec[2]}")
                     return
-        with self.suspend():                # hand the real terminal to zless
-            subprocess.run(["sh", "-c", self._pager_command(t, p)])
+        with self.suspend():                # hand the real terminal to the pager
+            subprocess.run(["sh", "-c", self._pager_command(t, p, pager)])
 
     def _viewer_done(self, lines: list[str], cap: int = VIEW_MAX_LINES) -> None:
         log = self.query_one("#log", RichLog)
@@ -1034,11 +1054,16 @@ class NfScope(App):
                 self._show_run_log(log)
             elif self.follow and self._tailer is not None:
                 new = self._tailer.read_new().splitlines()
-                for line in new:
-                    log.write(line)     # raw, unfiltered
-                # Keep the backing list in step, or a backfill rewrite would
-                # drop the lines that arrived while we were following.
-                self._runlog_lines.extend(new)
+                if new:
+                    # Follow only while parked at the bottom. If you scrolled up
+                    # to read, arriving lines must not yank the viewport back
+                    # down; scrolling to the bottom again resumes following.
+                    log.auto_scroll = log.scroll_y >= log.max_scroll_y - 1
+                    for line in new:
+                        log.write(line)     # raw, unfiltered
+                    # Keep the backing list in step, or a backfill rewrite would
+                    # drop the lines that arrived while we were following.
+                    self._runlog_lines.extend(new)
             return
 
         # Task / container / files view: follow the tree selection.
