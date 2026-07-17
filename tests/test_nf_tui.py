@@ -457,6 +457,103 @@ def test_run_log_pager_seeks_to_the_end(tmp_path):
     assert nf_tui.pager_bin() in ("less", None)
 
 
+# ---- metrics, sort, stale runs, web parity ---------------------------------
+
+def _write_trace(workdir: Path, realtime_ms: int, peak_rss_kb: int) -> None:
+    (workdir / ".command.trace").write_text(
+        f"nextflow.trace/v2\nrealtime={realtime_ms}\n%cpu=200\n"
+        f"%mem=10\npeak_rss={peak_rss_kb}\n")
+
+
+def test_parse_trace_reads_and_degrades(tmp_path):
+    from nf_tui import parse_trace
+    _write_trace(tmp_path, 6265, 448244)
+    m = parse_trace(str(tmp_path))
+    assert m.has_data() and m.realtime_ms == 6265 and m.peak_rss_kb == 448244
+    assert not parse_trace(str(tmp_path / "missing")).has_data()   # no crash
+    assert not parse_trace("").has_data()
+
+
+def test_sort_floats_the_slowest_process(tmp_path):
+    from nf_tui import parse_log
+    log = make_run(tmp_path, n_tasks=40, n_procs=4, with_workdirs=40)
+    # give each task a trace; make one process clearly the slowest
+    for t in parse_log(log):
+        proc = t.name.split(":")[-1].split(" ")[0]
+        slow = proc.endswith("PROC_002")
+        _write_trace(Path(t.workdir), 9000 if slow else 100, 1000)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        tree = app.query_one("#tasks", Tree)
+        app.action_cycle_sort()                  # -> slowest
+        await pilot.pause()
+        assert app.sort_mode == "slowest"
+        first_group = next(g for g in tree.root.children if g.children)
+        assert "PROC_002" in str(first_group.label)   # slowest process floated up
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_run_state_classifies_runs():
+    from nf_tui import RunInfo, run_state
+    now = 1_000_000.0
+    def mk(status, age, finished):
+        return RunInfo(Path("/x"), "r", "p", status, now - age, finished)
+    assert run_state(mk("OK", 1e6, False), now)[1] == "complete"
+    assert run_state(mk("ERR", 1e6, False), now)[1] == "failed"
+    assert run_state(mk("?", 1e6, True), now)[1] == "complete"    # marker in log
+    assert run_state(mk("?", 5, False), now)[1] == "running"      # recent write
+    assert run_state(mk("?", 1e6, False), now)[1] == "stalled"    # died silently
+
+
+def test_log_finished_detects_completion(tmp_path):
+    from nf_tui import _log_finished
+    done = tmp_path / "done.log"
+    done.write_text("... lots of log ...\nExecution complete -- Goodbye\n")
+    assert _log_finished(done)
+    partial = tmp_path / "partial.log"
+    partial.write_text("Submitted process > FOO\n... running ...\n")
+    assert not _log_finished(partial)
+
+
+def test_full_file_lifts_the_preview_cap(tmp_path, monkeypatch):
+    from nf_tui import VIEW_MAX_LINES
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    big = wd / "big.txt"
+    big.write_text("\n".join(f"line {i}" for i in range(VIEW_MAX_LINES + 3000)) + "\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("big.txt")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        capped = len(app.query_one("#log", RichLog).lines)
+        await pilot.press("F")                   # load the whole file in-pane
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        full = len(app.query_one("#log", RichLog).lines)
+        assert capped <= VIEW_MAX_LINES + 10
+        assert full > capped                     # F showed strictly more
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):

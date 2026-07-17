@@ -41,8 +41,10 @@ def main() -> None:
             f"nf-tui-web: no .nextflow.log found under {target}\n"
             f"pass a run directory, e.g.  nf-tui-web /path/to/run")
 
+    # NF_TUI_WEB tells the app it's served in a browser (no real terminal), so
+    # it offers in-pane "full file" viewing instead of shelling out to less.
     command = (
-        f"{shlex.quote(sys.executable)} "
+        f"NF_TUI_WEB=1 {shlex.quote(sys.executable)} "
         f"{shlex.quote(str(HERE / 'nf_tui.py'))} {shlex.quote(str(target))}"
     )
     print(f"nf-tui web UI ({target}) on http://{args.host}:{args.port}  "

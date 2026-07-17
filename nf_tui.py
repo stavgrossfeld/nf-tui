@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import os
 import re
 import shlex
 import shutil
@@ -50,6 +51,7 @@ RUNLOG_MAX_LINES = 600  # lines loaded per step (renders fast + reliably)
 RUNLOG_CHUNK = 200_000  # bytes read per backfill step when scrolling up
 VIEW_MAX_LINES = 2_000  # in-pane preview cap for host reads (text / gz)
 BAM_PREVIEW_LINES = 500 # smaller cap for container-decoded BAM/CRAM/BCF (faster)
+FULL_MAX_LINES = 200_000  # cap for the in-pane "full file" (F) — bounds memory
 
 # Lines we care about in .nextflow.log:
 #   ... [bf/407183] Submitted process > NFCORE:...:SRA_FASTQ_FTP (tag)
@@ -229,6 +231,60 @@ def human_size(n: int) -> str:
     return f"{size:.1f}GB"
 
 
+def human_duration(ms: float) -> str:
+    """6265 -> '6.3s', 95000 -> '1m35s', 3720000 -> '1h02m'."""
+    s = ms / 1000
+    if s < 60:
+        return f"{s:.1f}s"
+    m, s = divmod(int(round(s)), 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
+@dataclass
+class Metrics:
+    """The per-task numbers from a work dir's .command.trace (if tracing was
+    on). All optional — the file is absent when tracing is disabled."""
+    realtime_ms: int | None = None
+    pct_cpu: float | None = None
+    peak_rss_kb: int | None = None
+    pct_mem: float | None = None
+
+    def has_data(self) -> bool:
+        return self.realtime_ms is not None
+
+
+def parse_trace(workdir: str) -> Metrics:
+    """Read <workdir>/.command.trace (Nextflow's `key=value` resource dump)."""
+    if not workdir:
+        return Metrics()
+    try:
+        text = (Path(workdir) / ".command.trace").read_text(errors="replace")
+    except OSError:
+        return Metrics()
+    d: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            d[k.strip()] = v.strip()
+
+    def num(key: str) -> float | None:
+        try:
+            return float(d[key])
+        except (KeyError, ValueError):
+            return None
+
+    rt, cpu, rss, mem = num("realtime"), num("%cpu"), num("peak_rss"), num("%mem")
+    return Metrics(
+        realtime_ms=int(rt) if rt is not None else None,
+        pct_cpu=cpu,
+        peak_rss_kb=int(rss) if rss is not None else None,
+        pct_mem=mem,
+    )
+
+
 def looks_binary(path: Path, maxbytes: int = 8192) -> bool:
     try:
         with path.open("rb") as f:
@@ -405,11 +461,16 @@ def _proc_label(proc: str, tasks: list[Task]) -> str:
     return f"{short}   {done}/{total} {icon}"
 
 
-def _task_label(t: Task) -> str:
+def _task_label(t: Task, m: "Metrics | None" = None) -> str:
     _, tag = split_name(t.name)
     mark = "✗" if is_failed(t) else "✓" if is_done(t) else "•"
     exit_str = "" if t.exit in ("-", "") else f" exit={t.exit}"
-    return f"{mark} {tag or t.hash}   {t.status}{exit_str}"
+    extra = ""
+    if m is not None and m.has_data():
+        extra = f"   {human_duration(m.realtime_ms)}"
+        if m.peak_rss_kb:
+            extra += f" · {human_size(m.peak_rss_kb * 1024)}"
+    return f"{mark} {tag or t.hash}   {t.status}{exit_str}{extra}"
 
 
 class LogView(RichLog):
@@ -475,9 +536,11 @@ class NfScope(App):
         Binding("c", "view_container", "Container log"),
         Binding("d", "view_files", "Files"),
         Binding("L", "pager", "Open in less"),
+        Binding("F", "full_file", "Full file"),
         Binding("g", "view_run", "Run log"),
         Binding("z,m", "zoom", "Full screen"),
         Binding("f", "toggle_follow", "Follow"),
+        Binding("s", "cycle_sort", "Sort"),
         Binding("x", "toggle_failed", "Failed only"),
         Binding("o", "open_workdir", "Work dir"),
         Binding("r", "refresh", "Refresh"),
@@ -496,6 +559,8 @@ class NfScope(App):
         self.tasks: list[Task] = []
         self.failed_only = False
         self.query_str = ""         # / search: substring over task name or hash
+        self.sort_mode = "order"    # order | slowest | memory  (s cycles)
+        self.web = bool(os.environ.get("NF_TUI_WEB"))  # served in a browser: no less
         self.follow = True
         self.view = "task"          # "task" | "container" | "files" | "run"
         self._sig: tuple | None = None   # skip tree work when nothing changed
@@ -509,7 +574,9 @@ class NfScope(App):
         self._proc_nodes: dict = {}      # proc name -> TreeNode  (updated in place)
         self._task_nodes: dict = {}      # task hash -> TreeNode
         self._files: list[Path] = []     # entries backing the #files list
+        self._last_file: Path | None = None  # last previewed file (for F = full)
         self._tool_image_cache: dict = {}  # binary -> image that provides it
+        self._trace_cache: dict[str, Metrics] = {}  # task hash -> parsed .command.trace
         self._runlog_lines: list[str] = []  # run-log lines currently loaded
         self._runlog_start: int = 0      # byte offset of the first loaded line
         self._backfilling = False        # guard: backfill moves scroll_y itself
@@ -615,6 +682,8 @@ class NfScope(App):
         self._groups = {}
         for t in self._visible_tasks():
             self._groups.setdefault(split_name(t.name)[0], []).append(t)
+        if self.sort_mode != "order":
+            self._sort_groups()
         # Header summary so the TOTAL (across all process groups) is visible.
         n = len(self.tasks)
         nproc = len({split_name(t.name)[0] for t in self.tasks})
@@ -625,15 +694,19 @@ class NfScope(App):
             summary += f" · {failed} failed"
         if self.query_str:
             summary += f' · filter "{self.query_str}": {len(self._visible_tasks())} shown'
+        if self.sort_mode != "order":
+            summary += f" · sorted by {self.sort_mode}"
         loc = str(self.log_file).replace(str(Path.home()), "~")
         self.sub_title = f"{summary}  —  {loc}"
-        cur_filter = (self.failed_only, self.query_str)
-        sig = tuple((t.hash, t.status, t.exit) for t in self.tasks) + cur_filter
+        # A full rebuild (clear + re-add) is needed when the filter OR the sort
+        # changes, because the in-place sync only appends/updates, never reorders.
+        build_key = (self.failed_only, self.query_str, self.sort_mode)
+        sig = tuple((t.hash, t.status, t.exit) for t in self.tasks) + build_key
         if sig != self._sig:
             self._sig = sig
-            if cur_filter != self._built_filter:
-                self._built_filter = cur_filter
-                self._full_rebuild()   # filter changed: repopulate from scratch
+            if build_key != self._built_filter:
+                self._built_filter = build_key
+                self._full_rebuild()   # filter/sort changed: repopulate from scratch
             else:
                 self._sync_tree()      # in place: never disturbs cursor/focus/scroll
         self._render_current()
@@ -646,6 +719,35 @@ class NfScope(App):
         if q:
             tasks = [t for t in tasks if q in t.name.lower() or q in t.hash.lower()]
         return tasks
+
+    def _metrics(self, t: Task) -> Metrics | None:
+        """Cached .command.trace for a finished task (None until it finishes).
+        Misses aren't cached, so a trace written a moment after completion is
+        still picked up on a later refresh."""
+        if not (is_done(t) or is_failed(t)):
+            return None
+        m = self._trace_cache.get(t.hash)
+        if m is None:
+            m = parse_trace(t.workdir)
+            if m.has_data():
+                self._trace_cache[t.hash] = m
+        return m
+
+    def _sort_groups(self) -> None:
+        """Reorder tasks within each process group by the active sort, and float
+        the heaviest process group to the top — so the run's bottleneck (slowest
+        or hungriest task) surfaces even when each process has one task."""
+        def metric(t: Task) -> int:
+            m = self._metrics(t)
+            if self.sort_mode == "memory":
+                return m.peak_rss_kb if m and m.peak_rss_kb else 0
+            return m.realtime_ms if m and m.realtime_ms else 0     # slowest
+        for tasks in self._groups.values():
+            tasks.sort(key=metric, reverse=True)
+        self._groups = dict(sorted(
+            self._groups.items(),
+            key=lambda kv: max((metric(t) for t in kv[1]), default=0),
+            reverse=True))
 
     def _full_rebuild(self) -> None:
         tree = self.query_one("#tasks", Tree)
@@ -675,11 +777,12 @@ class NfScope(App):
             else:
                 pnode.set_label(_proc_label(proc, tasks))
             for t in tasks:
+                label = _task_label(t, self._metrics(t))
                 leaf = self._task_nodes.get(t.hash)
                 if leaf is None:
-                    self._task_nodes[t.hash] = pnode.add_leaf(_task_label(t), data=t)
+                    self._task_nodes[t.hash] = pnode.add_leaf(label, data=t)
                 else:
-                    leaf.set_label(_task_label(t))
+                    leaf.set_label(label)
 
     def _selected(self) -> Task | None:
         node = self.query_one("#tasks", Tree).cursor_node
@@ -701,6 +804,14 @@ class NfScope(App):
     def _log_header(self, log: RichLog, t: Task) -> None:
         log.write(f"{t.name}   [{t.hash}]   {t.status}")
         log.write(t.workdir or "(no work dir known yet)")
+        m = self._metrics(t)
+        if m is not None and m.has_data():
+            bits = [f"ran {human_duration(m.realtime_ms)}"]
+            if m.pct_cpu is not None:
+                bits.append(f"{m.pct_cpu / 100:.1f}× cpu")   # trace %cpu is per-core-summed
+            if m.peak_rss_kb:
+                bits.append(f"{human_size(m.peak_rss_kb * 1024)} peak")
+            log.write("  ·  ".join(bits))
         if self.view == "task":
             sh = Path(t.workdir) / ".command.sh" if t.workdir else None
             if sh and sh.exists():
@@ -882,8 +993,11 @@ class NfScope(App):
         files.highlighted = 0
         self._open_file(self._files[0])
 
-    def _open_file(self, p: Path) -> None:
-        """Render a file in the right pane using a tool from the task's container."""
+    def _open_file(self, p: Path, full: bool = False) -> None:
+        """Render a file in the right pane using a tool from the task's container.
+        `full` lifts the preview cap (the in-pane alternative to L, and the only
+        way to see a whole file in the browser, where L can't run)."""
+        self._last_file = p
         t = self._selected()
         log = self.query_one("#log", RichLog)
         try:
@@ -915,7 +1029,8 @@ class NfScope(App):
                 sz = human_size(p.stat().st_size)
             except OSError:
                 sz = "?"
-            log.write(f"(binary file, {sz} — no text viewer; press L for less)")
+            hint = "F for full" if self.web else "L for less"
+            log.write(f"(binary file, {sz} — no text viewer; press {hint})")
             return
         if tool:
             header.append(f"$ {tool} {p.name}   (in {self._container_desc(t)})")
@@ -927,22 +1042,25 @@ class NfScope(App):
         log.clear()
         for h in header:
             log.write(h)
-        log.write("… loading …")
+        log.write("… loading full file …" if full else "… loading …")
         # Focus stays on the file list; its paging keys scroll this pane.
-        self._run_viewer(t, p, tool, gz)
+        self._run_viewer(t, p, tool, gz, full)
 
     @work(thread=True, exclusive=True)
-    def _run_viewer(self, t: Task, p: Path, tool: str | None, gz: bool) -> None:
+    def _run_viewer(self, t: Task, p: Path, tool: str | None, gz: bool,
+                    full: bool = False) -> None:
+        text_cap = FULL_MAX_LINES if full else VIEW_MAX_LINES
+        bam_cap = FULL_MAX_LINES if full else BAM_PREVIEW_LINES
         # Text and gzip are read directly on the host — fast, no container.
         if tool is None:
             if gz:
-                out = head_gzip(p, VIEW_MAX_LINES)
+                out = head_gzip(p, text_cap)
             else:
                 try:
-                    out = p.read_text(errors="replace").splitlines()[:VIEW_MAX_LINES]
+                    out = p.read_text(errors="replace").splitlines()[:text_cap]
                 except OSError as e:
                     out = [f"(cannot read: {e})"]
-            self.call_from_thread(self._viewer_done, out or ["(empty)"], VIEW_MAX_LINES)
+            self.call_from_thread(self._viewer_done, out or ["(empty)"], text_cap)
             return
         # BAM/CRAM/BCF: decode with a samtools/bcftools image + the task's mounts.
         spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
@@ -954,7 +1072,7 @@ class NfScope(App):
         # cd into the task work dir so relative references (e.g. a CRAM's
         # -T genome.fasta) resolve exactly as they did for the task.
         inner = (f"cd {shlex.quote(t.workdir)} && "
-                 f"{tool} {shlex.quote(str(p))} 2>&1 | head -n {BAM_PREVIEW_LINES}")
+                 f"{tool} {shlex.quote(str(p))} 2>&1 | head -n {bam_cap}")
         if engine in ("docker", "podman"):
             try:
                 chk = subprocess.run([engine, "image", "inspect", image],
@@ -983,7 +1101,7 @@ class NfScope(App):
             out = ["(viewer timed out after 120s)"]
         except Exception as e:                       # noqa: BLE001
             out = [f"(error running viewer: {e})"]
-        self.call_from_thread(self._viewer_done, out, BAM_PREVIEW_LINES)
+        self.call_from_thread(self._viewer_done, out, bam_cap)
 
     def _pager_command(self, t: Task, p: Path, pager: str) -> str:
         """Shell string that pages a file lazily. BAM/CRAM/BCF are decoded by
@@ -1006,7 +1124,35 @@ class NfScope(App):
                  + ["-w", t.workdir, image, "sh", "-c", inner])
         return " ".join(shlex.quote(x) for x in parts) + f" 2>&1 | {pager} -R"
 
+    def _current_file(self) -> tuple[Task | None, Path | None]:
+        if self.view != "files":
+            return None, None
+        files = self.query_one("#files", OptionList)
+        idx = files.highlighted
+        if idx is None or idx >= len(self._files):
+            return self._selected(), None
+        return self._selected(), self._files[idx]
+
+    def action_full_file(self) -> None:
+        """Load the whole selected file in-pane (uncapped). Works in the terminal
+        and the browser — the web has no external `less`."""
+        if self.view != "files":
+            self.notify("switch to the files view (d) to load a file in full")
+            return
+        _, p = self._current_file()
+        if p is None or p.is_dir():
+            return
+        self._open_file(p, full=True)
+
     def action_pager(self) -> None:
+        # In the browser there is no terminal to hand to less; load in-pane.
+        if self.web:
+            if self.view == "files":
+                self.notify("browser mode: loading the full file in-pane (no less)")
+                self.action_full_file()
+            else:
+                self.notify("browser mode: scroll the pane (external less needs a terminal)")
+            return
         # Run log: page the whole .nextflow.log on the host, opened at the end
         # (+G) to match the pane. No cap here — less pages it lazily.
         if self.view == "run":
@@ -1058,8 +1204,10 @@ class NfScope(App):
         if lines:
             log.write("\n".join(lines))
         if len(lines) >= cap:
-            log.write(f"─── (preview capped at {cap:,} lines — "
-                      f"press L for the full file, o to open the work dir) ───")
+            more = "scroll up/down — this is the whole file" if cap >= FULL_MAX_LINES \
+                else ("press F for the full file" if self.web
+                      else "press F for more in-pane, or L for less")
+            log.write(f"─── (showing {cap:,} lines — {more}; o opens the work dir) ───")
         # Scroll to the top after the content is laid out (doing it now, before
         # the virtual size is measured, doesn't stick).
         self.call_after_refresh(lambda: log.scroll_home(animate=False))
@@ -1237,6 +1385,17 @@ class NfScope(App):
         self.notify(f"showing {'failed only' if self.failed_only else 'all'} "
                     f"({n} failed)")
 
+    def action_cycle_sort(self) -> None:
+        order = ["order", "slowest", "memory"]
+        self.sort_mode = order[(order.index(self.sort_mode) + 1) % len(order)]
+        self._sig = None            # force a rebuild in the new order
+        self._force_refresh = True  # re-group even though the log is unchanged
+        self.action_refresh()
+        labels = {"order": "submission order", "slowest": "slowest first",
+                  "memory": "peak memory first"}
+        self.notify(f"sorted by {labels[self.sort_mode]}"
+                    + ("" if self.sort_mode == "order" else " (heaviest process on top)"))
+
     # ---- / search over the task tree ---------------------------------------
 
     def action_search(self) -> None:
@@ -1285,6 +1444,49 @@ class RunInfo:
     pipeline: str
     status: str           # OK / ERR / ? (from .nextflow/history)
     mtime: float
+    finished: bool        # log tail has a Nextflow completion marker
+
+
+# Lines Nextflow writes at the very end of a run — their presence in the tail
+# means the process exited cleanly (vs. being killed / the node dying).
+_DONE_MARKERS = ("Execution complete -- Goodbye", "Goodbye", "Workflow completed")
+STALE_AFTER = 90.0        # s since last write, past which an unfinished run reads as stalled
+
+
+def _log_finished(path: Path) -> bool:
+    """True if the log's tail carries a completion marker."""
+    tail = _read_all(path, limit=8000)
+    return any(mark in tail for mark in _DONE_MARKERS)
+
+
+def _ago(seconds: float) -> str:
+    """A coarse 'time since' for the picker: '12s', '5m', '3h', '2d' ago."""
+    s = int(max(0, seconds))
+    if s < 60:
+        return f"{s}s ago"
+    if s < 3600:
+        return f"{s // 60}m ago"
+    if s < 86400:
+        return f"{s // 3600}h ago"
+    return f"{s // 86400}d ago"
+
+
+def run_state(r: "RunInfo", now: float | None = None) -> tuple[str, str]:
+    """(icon, word) describing a run's disposition for the picker.
+
+    history OK/ERR is authoritative when present. Otherwise a completion marker
+    in the log means done; a recent write means it's still going; anything else
+    stopped without finishing — killed, OOM, or a dead node."""
+    if r.status == "OK":
+        return "✓", "complete"
+    if r.status == "ERR":
+        return "✗", "failed"
+    if r.finished:
+        return "✓", "complete"
+    age = (now if now is not None else time.time()) - r.mtime
+    if age < STALE_AFTER:
+        return "●", "running"
+    return "⚠", "stalled"
 
 
 def _scan_header(path: Path, max_lines: int = 500) -> tuple[str, str, str]:
@@ -1388,6 +1590,7 @@ def gather_runs(base: Path) -> list[RunInfo]:
             pipeline=_pipeline_of(command),
             status=status,
             mtime=mtime,
+            finished=_log_finished(p),
         ))
     infos.sort(key=lambda r: r.mtime, reverse=True)
     return infos
@@ -1412,15 +1615,18 @@ class RunPickerScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.app.sub_title = f"select a run under {self.base}"
+        self.app.sub_title = (f"select a run under {self.base}"
+                              "   —   ● running · ⚠ stalled · ✓ complete · ✗ failed")
         ol = self.query_one("#runs", OptionList)
-        icons = {"OK": "✓", "ERR": "✗"}
+        now = time.time()
         for i, r in enumerate(self.runs):
             when = datetime.fromtimestamp(r.mtime).strftime("%Y-%m-%d %H:%M")
-            mark = icons.get(r.status, "…")
+            mark, word = run_state(r, now)
+            age = _ago(now - r.mtime)
             loc = str(r.path.parent).replace(str(Path.home()), "~")
             ol.add_option(Option(
-                f"{mark}  {when}   {r.runname}   {r.pipeline}\n     {loc}",
+                f"{mark} {word:<9} {when} ({age})   {r.runname}   {r.pipeline}"
+                f"\n     {loc}",
                 id=str(i),
             ))
         if self.runs:

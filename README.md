@@ -12,6 +12,9 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 
 - **Live task tree** grouped by process, with per-process progress and
   status (`✓` / `✗` / running), updated on a timer while a pipeline runs.
+- **Resource metrics** — each finished task shows its duration and peak memory
+  (from `.command.trace`); `s` sorts to float the slowest / hungriest process
+  to the top, so the bottleneck is one keypress away.
 - **Per-task logs** — task output (`.command.log` with container-pull and
   JVM/Fontconfig noise filtered out) or the raw container log.
 - **Run log** — opens on it, at the tail, where a run says how it went; a live
@@ -23,12 +26,15 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   `bcftools` from the task's own container** (reusing its mounts, so the
   reference genome resolves). Press `L` to open any file full in `less`.
 - **Run picker** — with no path, it finds every run under a directory and
-  lets you choose (and hop between runs without quitting).
+  lets you choose (and hop between runs without quitting). Each run is marked
+  **running** / **stalled** / **complete** / **failed**, so a crashed run
+  (killed, OOM, dead node) is obvious at a glance.
 - **Find any task** — `/` filters the tree by process name or hash as you
   type; `x` filters to failed tasks; `z`/`m` full-screens any pane; `o` opens
   a task's work dir.
 - **Web mode** — the same UI in a browser via `nf-tui-web`, streamed with
-  [textual-serve](https://github.com/Textualize/textual-serve).
+  [textual-serve](https://github.com/Textualize/textual-serve). `F` loads a
+  whole file in-pane there, since the browser has no terminal for `less`.
 
 ## Install
 
@@ -109,7 +115,9 @@ Notes for clusters:
 | `/` | filter the tree by task name or hash — `Enter` keeps it, `esc` clears |
 | `t` / `c` / `g` | task log / container log / full run log |
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
+| `s` | cycle sort — submission order → slowest → peak memory (heaviest process on top) |
 | `L` | open the selected file — or the whole run log — in `less` (lazy paging + search) |
+| `F` | load the whole selected file in-pane (uncapped; the browser's `L`) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |
 | `z` / `m` | full-screen (maximize) the focused pane (`z`/`m`/`esc` to restore) |
 | `Tab` | cycle focus between panes |
