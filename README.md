@@ -24,7 +24,9 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   reference genome resolves). Press `L` to open any file full in `less`.
 - **Run picker** — with no path, it finds every run under a directory and
   lets you choose (and hop between runs without quitting).
-- **Full-screen any pane**, filter to failed tasks, open a task's work dir.
+- **Find any task** — `/` filters the tree by process name or hash as you
+  type; `x` filters to failed tasks; `z`/`m` full-screens any pane; `o` opens
+  a task's work dir.
 - **Web mode** — the same UI in a browser via `nf-tui-web`, streamed with
   [textual-serve](https://github.com/Textualize/textual-serve).
 
@@ -104,11 +106,12 @@ Notes for clusters:
 | Key | Action |
 |-----|--------|
 | `↑`/`↓`, `→`/`←` | move / expand in the task tree |
+| `/` | filter the tree by task name or hash — `Enter` keeps it, `esc` clears |
 | `t` / `c` / `g` | task log / container log / full run log |
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
 | `L` | open the selected file — or the whole run log — in `less` (lazy paging + search) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |
-| `z` | full-screen the focused pane (`z`/`esc` to restore) |
+| `z` / `m` | full-screen (maximize) the focused pane (`z`/`m`/`esc` to restore) |
 | `Tab` | cycle focus between panes |
 | `x` | show failed tasks only |
 | `o` | open the task's work directory |

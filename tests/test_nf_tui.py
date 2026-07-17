@@ -158,6 +158,65 @@ def test_failed_filter(tmp_path):
     assert drive(NfScope(log), steps)
 
 
+def test_search_filters_tree_by_name_and_hash(tmp_path):
+    from textual.widgets import Input
+    log = make_run(tmp_path, n_tasks=300, n_procs=6)
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        box = app.query_one("#search", Input)
+        total = len(leaves(tree))
+
+        await pilot.press("slash")               # open the search box
+        await pilot.pause()
+        assert box.has_class("on") and box.has_focus
+
+        app._apply_query("PROC_003")             # narrow to one process
+        await pilot.pause()
+        narrowed = leaves(tree)
+        assert 0 < len(narrowed) < total
+        assert all("proc_003" in n.data.name.lower() for n in narrowed)
+
+        h = app.tasks[5].hash                    # narrow to a single hash
+        app._apply_query(h)
+        await pilot.pause()
+        assert [n.data.hash for n in leaves(tree)] == [h]
+
+        app._apply_query("no-such-task-xyz")     # no match -> a message, no crash
+        await pilot.pause()
+        assert leaves(tree) == []
+
+        await pilot.press("slash")               # reopen, esc clears the filter
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_str == "" and len(leaves(tree)) == total
+        assert not box.has_class("on")
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_search_survives_live_refresh(tmp_path):
+    # A filter must stay applied when the 1s refresh re-parses a growing log.
+    log = make_run(tmp_path, n_tasks=120, n_procs=4)
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        app._apply_query("PROC_001")
+        await pilot.pause()
+        shown = len(leaves(tree))
+        assert 0 < shown < 120
+        app._force_refresh = True                # simulate the timer re-parsing
+        app.action_refresh()
+        await pilot.pause()
+        assert app.query_str == "PROC_001"
+        assert len(leaves(tree)) == shown        # filter still applied
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
 def test_broken_symlink_and_binary(tmp_path):
     wd = tmp_path / "work" / "aa" / ("a" * 30)
     wd.mkdir(parents=True)

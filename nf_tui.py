@@ -41,7 +41,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Header, OptionList, RichLog, Tree
+from textual.widgets import Footer, Header, Input, OptionList, RichLog, Tree
 from textual.widgets.option_list import Option
 
 REFRESH_SECONDS = 1.0
@@ -463,17 +463,20 @@ class NfScope(App):
     #files:focus { border: round $accent; }
     #log { width: 1fr; border: round $panel; padding: 0 1; }
     #log:focus { border: round $accent; }
+    #search { display: none; height: 3; border: round $accent; }
+    #search.on { display: block; }
     """
     BINDINGS = [
         Binding("tab", "focus_next_pane", "Next pane", show=False),
         Binding("l,enter", "focus_log", "Scroll log"),
         Binding("escape", "back", "Back to tasks"),
+        Binding("slash", "search", "Search"),
         Binding("t", "view_task", "Task log"),
         Binding("c", "view_container", "Container log"),
         Binding("d", "view_files", "Files"),
         Binding("L", "pager", "Open in less"),
         Binding("g", "view_run", "Run log"),
-        Binding("z", "zoom", "Full screen"),
+        Binding("z,m", "zoom", "Full screen"),
         Binding("f", "toggle_follow", "Follow"),
         Binding("x", "toggle_failed", "Failed only"),
         Binding("o", "open_workdir", "Work dir"),
@@ -492,10 +495,11 @@ class NfScope(App):
             self.log_file = self._runs[0].path if len(self._runs) == 1 else None
         self.tasks: list[Task] = []
         self.failed_only = False
+        self.query_str = ""         # / search: substring over task name or hash
         self.follow = True
         self.view = "task"          # "task" | "container" | "files" | "run"
         self._sig: tuple | None = None   # skip tree work when nothing changed
-        self._built_filter: bool | None = None  # failed_only used for last full build
+        self._built_filter: tuple | None = None  # (failed_only, query) at last full build
         self._shown: tuple | None = None # what the log pane currently shows
         self._tailer: Follower | None = None
         self._task_by_hash: dict[str, Task] = {}
@@ -517,6 +521,8 @@ class NfScope(App):
             tree.show_root = False
             tree.guide_depth = 3
             yield tree
+            yield Input(placeholder="filter tasks by name or hash — enter to keep, esc to clear",
+                        id="search")
             with Horizontal(id="bottom"):
                 # Files view: a clickable list on the left…
                 yield FileList(id="files")
@@ -617,22 +623,29 @@ class NfScope(App):
         summary = f"{done:,}/{n:,} tasks · {nproc} processes"
         if failed:
             summary += f" · {failed} failed"
+        if self.query_str:
+            summary += f' · filter "{self.query_str}": {len(self._visible_tasks())} shown'
         loc = str(self.log_file).replace(str(Path.home()), "~")
         self.sub_title = f"{summary}  —  {loc}"
-        sig = tuple((t.hash, t.status, t.exit) for t in self.tasks) + (self.failed_only,)
+        cur_filter = (self.failed_only, self.query_str)
+        sig = tuple((t.hash, t.status, t.exit) for t in self.tasks) + cur_filter
         if sig != self._sig:
             self._sig = sig
-            if self.failed_only != self._built_filter:
-                self._built_filter = self.failed_only
+            if cur_filter != self._built_filter:
+                self._built_filter = cur_filter
                 self._full_rebuild()   # filter changed: repopulate from scratch
             else:
                 self._sync_tree()      # in place: never disturbs cursor/focus/scroll
         self._render_current()
 
     def _visible_tasks(self) -> list[Task]:
+        tasks = self.tasks
         if self.failed_only:
-            return [t for t in self.tasks if is_failed(t)]
-        return self.tasks
+            tasks = [t for t in tasks if is_failed(t)]
+        q = self.query_str.strip().lower()
+        if q:
+            tasks = [t for t in tasks if q in t.name.lower() or q in t.hash.lower()]
+        return tasks
 
     def _full_rebuild(self) -> None:
         tree = self.query_one("#tasks", Tree)
@@ -641,8 +654,13 @@ class NfScope(App):
         self._task_nodes = {}
         self._sync_tree()
         if not self._proc_nodes:
-            tree.root.add_leaf("(no failed tasks)" if self.failed_only
-                               else "(no tasks yet)")
+            if self.query_str:
+                msg = f'(no tasks match "{self.query_str}")'
+            elif self.failed_only:
+                msg = "(no failed tasks)"
+            else:
+                msg = "(no tasks yet)"
+            tree.root.add_leaf(msg)
 
     def _sync_tree(self) -> None:
         """Update the tree IN PLACE — update labels, append new nodes. Never
@@ -1140,6 +1158,10 @@ class NfScope(App):
         tree = self.query_one("#tasks", Tree)
         log = self.query_one("#log", RichLog)
         files = self.query_one("#files", OptionList)
+        search = self.query_one("#search", Input)
+        if search.has_focus or search.has_class("on"):
+            self._close_search(clear=True)        # esc in search clears the filter
+            return
         if self.screen.maximized is not None:
             self.screen.minimize()
             return
@@ -1214,6 +1236,37 @@ class NfScope(App):
         n = sum(is_failed(t) for t in self.tasks)
         self.notify(f"showing {'failed only' if self.failed_only else 'all'} "
                     f"({n} failed)")
+
+    # ---- / search over the task tree ---------------------------------------
+
+    def action_search(self) -> None:
+        box = self.query_one("#search", Input)
+        box.add_class("on")
+        box.value = self.query_str      # reopen with the current filter to edit
+        box.focus()
+
+    def _apply_query(self, text: str) -> None:
+        self.query_str = text
+        self._sig = None                # force a rebuild
+        self._force_refresh = True      # re-group even though the log is unchanged
+        self.action_refresh()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search":
+            self._apply_query(event.value)   # filter live as you type
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search":       # enter: keep the filter, leave the box
+            event.input.remove_class("on")
+            self.query_one("#tasks", Tree).focus()
+
+    def _close_search(self, clear: bool) -> None:
+        box = self.query_one("#search", Input)
+        box.remove_class("on")
+        if clear and self.query_str:
+            box.value = ""
+            self._apply_query("")
+        self.query_one("#tasks", Tree).focus()
 
 
 def resolve_log(arg: str) -> Path:
