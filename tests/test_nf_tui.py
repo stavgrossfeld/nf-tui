@@ -589,6 +589,85 @@ def test_full_file_on_container_file_without_tree_cursor(tmp_path):
     assert drive(NfScope(tmp_path), steps)
 
 
+def test_log_finished_reads_only_the_tail(tmp_path):
+    # Must detect the end marker without reading the whole (possibly huge) file.
+    from nf_tui import _log_finished
+    big = tmp_path / "big.log"
+    big.write_text("filler line\n" * 200_000 + "Execution complete -- Goodbye\n")
+    partial = tmp_path / "partial.log"
+    partial.write_text("still running\n" * 1000)
+    assert _log_finished(big)
+    assert not _log_finished(partial)
+    # a marker only in the HEAD (not the tail) must not count as finished
+    head_only = tmp_path / "head.log"
+    head_only.write_text("Goodbye\n" + "more log\n" * 200_000)
+    assert not _log_finished(head_only)
+
+
+def test_switching_runs_resets_per_run_state(tmp_path):
+    # A task in the new run whose short hash matches one in the old run must show
+    # the new run's metrics, not the cached old ones.
+    def mk(root: Path, dur_ms: int) -> Path:
+        wd = root / "work" / "ab" / ("c" * 30)
+        wd.mkdir(parents=True)
+        (wd / ".command.log").write_text("x\n")
+        (wd / ".command.trace").write_text(
+            f"nextflow.trace/v2\nrealtime={dur_ms}\npeak_rss=1000\n")
+        log = root / ".nextflow.log"
+        log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                       f"exit: 0; error: -; workDir: {wd}]\n")
+        return log
+
+    a = mk(tmp_path / "a", 5000)
+    b = mk(tmp_path / "b", 99000)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        assert app._metrics(app.tasks[0]).realtime_ms == 5000
+        app.load_run(b)
+        await pilot.pause()
+        assert app._metrics(app.tasks[0]).realtime_ms == 99000   # not the cached 5000
+        assert app._files == [] and app._files_task is None      # file state reset too
+        return True
+
+    assert drive(NfScope(a), steps)
+
+
+def test_picking_a_run_does_not_open_a_stale_file(tmp_path):
+    # The picker's OptionList selection bubbles to the app's file handler; after
+    # browsing files it must not reopen a previous run's file.
+    from generate_run import make_run
+    make_run(tmp_path, n_tasks=20, n_procs=2, with_workdirs=20)
+    (tmp_path / ".nextflow.log.1").write_text((tmp_path / ".nextflow.log").read_text())
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        assert isinstance(app.screen, RunPickerScreen)
+        app.screen.query_one("#runs", OptionList).highlighted = 0
+        await pilot.press("enter")
+        await pilot.pause(); await pilot.pause()
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause(); await app.workers.wait_for_complete(); await pilot.pause()
+        assert len(app._files) >= 1                     # files got populated
+        for _ in range(6):
+            if isinstance(app.screen, RunPickerScreen):
+                break
+            await pilot.press("escape")
+            await pilot.pause()
+        opened = []
+        app._open_file = lambda p, full=False: opened.append(p)
+        app.screen.query_one("#runs", OptionList).highlighted = 0
+        await pilot.press("enter")
+        await pilot.pause(); await pilot.pause()
+        assert opened == []                             # no stale file opened
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):

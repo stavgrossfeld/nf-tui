@@ -646,6 +646,15 @@ class NfScope(App):
         self._proc_nodes = {}
         self._task_nodes = {}
         self._tool_image_cache = {}
+        # Run-scoped caches/state — must NOT carry over, or a task in the new run
+        # whose short hash matches one in the old run would show stale metrics,
+        # and the old run's file list could be reopened.
+        self._trace_cache = {}
+        self._files = []
+        self._files_task = None
+        self._last_file = None
+        self._runlog_lines = []
+        self._runlog_start = 0
         tree = self.query_one("#tasks", Tree)
         tree.clear()
         self.query_one("#files", OptionList).display = False
@@ -1284,6 +1293,10 @@ class NfScope(App):
     def on_option_list_option_selected(self, event) -> None:
         # A file was clicked / entered in the left list -> open it on the right.
         # Focus stays on the list; its paging keys scroll the content pane.
+        # Guard on the list id: the run picker's OptionList selection bubbles up
+        # to this app handler too, and must not be treated as a file.
+        if event.option_list.id != "files":
+            return
         idx = event.option.id
         if idx is not None and idx.isdigit() and int(idx) < len(self._files):
             self._open_file(self._files[int(idx)])
@@ -1456,8 +1469,16 @@ STALE_AFTER = 90.0        # s since last write, past which an unfinished run rea
 
 
 def _log_finished(path: Path) -> bool:
-    """True if the log's tail carries a completion marker."""
-    tail = _read_all(path, limit=8000)
+    """True if the log's tail carries a completion marker. Reads only the last
+    few KB (seek), not the whole file — the picker scans every run at startup
+    and a .nextflow.log can be hundreds of MB."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 8000))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
     return any(mark in tail for mark in _DONE_MARKERS)
 
 
