@@ -554,6 +554,41 @@ def test_full_file_lifts_the_preview_cap(tmp_path, monkeypatch):
     assert drive(NfScope(tmp_path), steps)
 
 
+def test_full_file_on_container_file_without_tree_cursor(tmp_path):
+    # Repro for the AttributeError crash: F on a BAM/CRAM while the tree cursor
+    # is NOT on a task leaf. _open_file must use the files' task, not _selected().
+    wd = tmp_path / "work" / "d0" / ("7" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    (wd / "test.recal.cram").write_bytes(b"CRAM\x00fake")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")                   # files view: populates _files_task
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("test.recal.cram")
+        # move the tree cursor OFF the task, onto its process group node
+        tree.move_cursor(tree.root.children[0])
+        await pilot.pause()
+        assert app._selected() is None           # the exact precondition of the bug
+        await pilot.press("F")                   # must not raise
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        text = "\n".join(str(x) for x in app.query_one("#log", RichLog).lines)
+        assert "test.recal.cram" in text         # it rendered (a decode message)
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):

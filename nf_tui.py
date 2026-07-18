@@ -574,6 +574,7 @@ class NfScope(App):
         self._proc_nodes: dict = {}      # proc name -> TreeNode  (updated in place)
         self._task_nodes: dict = {}      # task hash -> TreeNode
         self._files: list[Path] = []     # entries backing the #files list
+        self._files_task: Task | None = None  # task whose dir backs #files
         self._last_file: Path | None = None  # last previewed file (for F = full)
         self._tool_image_cache: dict = {}  # binary -> image that provides it
         self._trace_cache: dict[str, Metrics] = {}  # task hash -> parsed .command.trace
@@ -932,8 +933,8 @@ class NfScope(App):
         finally:
             self._backfilling = False
 
-    def _container_desc(self, t: Task) -> str:
-        cont = task_container(t.workdir) if t.workdir else None
+    def _container_desc(self, t: Task | None) -> str:
+        cont = task_container(t.workdir) if (t and t.workdir) else None
         return f"{cont[0]}:{cont[1].split('/')[-1]}" if cont else "no container found"
 
     def _viewer_spec(self, workdir: str, tool: str):
@@ -969,6 +970,7 @@ class NfScope(App):
 
     def _populate_files(self, t: Task) -> None:
         """Fill the left file list for a task. Content opens on selection."""
+        self._files_task = t          # the files belong to this task (for decode)
         self._tailer = None
         files = self.query_one("#files", OptionList)
         files.clear_options()
@@ -998,7 +1000,10 @@ class NfScope(App):
         `full` lifts the preview cap (the in-pane alternative to L, and the only
         way to see a whole file in the browser, where L can't run)."""
         self._last_file = p
-        t = self._selected()
+        # The files belong to the task whose dir we listed; prefer it. The tree
+        # cursor (_selected) can be off a task leaf (e.g. on a process group),
+        # which used to hand a None task to the container decode below.
+        t = self._files_task or self._selected()
         log = self.query_one("#log", RichLog)
         try:
             real = p.resolve()
@@ -1127,11 +1132,12 @@ class NfScope(App):
     def _current_file(self) -> tuple[Task | None, Path | None]:
         if self.view != "files":
             return None, None
+        t = self._files_task or self._selected()   # the task the file list belongs to
         files = self.query_one("#files", OptionList)
         idx = files.highlighted
         if idx is None or idx >= len(self._files):
-            return self._selected(), None
-        return self._selected(), self._files[idx]
+            return t, None
+        return t, self._files[idx]
 
     def action_full_file(self) -> None:
         """Load the whole selected file in-pane (uncapped). Works in the terminal
@@ -1169,12 +1175,8 @@ class NfScope(App):
         if self.view != "files":
             self.notify("switch to the files view (d), or g for the run log")
             return
-        files = self.query_one("#files", OptionList)
-        idx = files.highlighted
-        if idx is None or idx >= len(self._files):
-            return
-        t, p = self._selected(), self._files[idx]
-        if t is None:
+        t, p = self._current_file()
+        if p is None or p.is_dir():
             return
         pager = pager_bin()
         if pager is None:
@@ -1183,7 +1185,7 @@ class NfScope(App):
         # Only BAM/CRAM/BCF need the container; check its image is present.
         tool = decode_tool(p)
         if tool is not None:
-            spec = self._viewer_spec(t.workdir, tool) if t.workdir else None
+            spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
             if spec and spec[0] in ("docker", "podman"):
                 chk = subprocess.run([spec[0], "image", "inspect", spec[2]],
                                      capture_output=True)
