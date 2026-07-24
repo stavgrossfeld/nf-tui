@@ -11,7 +11,12 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 ## Features
 
 - **Live task tree** grouped by process, with per-process progress and
-  status (`✓` / `✗` / running), updated on a timer while a pipeline runs.
+  status (`✓` / `✗` / `⟲` cached / running), updated on a timer while a
+  pipeline runs.
+- **Works with `-resume`** — cached tasks are shown (`⟲`) with their work dirs
+  resolved, so a resumed run's logs, outputs and metrics stay browsable. Retries
+  (`errorStrategy 'retry'`) and `storeDir` tasks are shown too, and every
+  executor is supported (local, SLURM/PBS via `GridTaskHandler`, k8s, AWS Batch).
 - **Resource metrics** — each finished task shows its duration and peak memory
   (from `.command.trace`); `s` sorts to float the slowest / hungriest process
   to the top, so the bottleneck is one keypress away.
@@ -128,9 +133,15 @@ Notes for clusters:
 
 ## How it works
 
-nf-tui parses `.nextflow.log` (the `TaskHandler[...]` and `Submitted process`
-lines) for each task's hash, status, exit code, and work directory — so it
-works on any completed or in-progress run without a plugin. File viewers reuse
+nf-tui parses `.nextflow.log` for each task's hash, status, exit code, and work
+directory — so it works on any completed or in-progress run without a plugin.
+It reads both the `TaskHandler[...]` lines (any executor: the class name always
+ends in `TaskHandler`) and all four of Nextflow's task announcements —
+`Submitted`, `Re-submitted`, `Cached`, and `Stored`. That last pair matters:
+a `-resume` run logs **only** `Cached process` lines and no handler lines at
+all, so a parser that ignores them shows a resumed run as empty. Cached tasks
+carry no work dir in the log, so nf-tui resolves them against the run's work
+tree (honouring `-w`). File viewers reuse
 the exact `docker`/`singularity` invocation from each task's `.command.run`
 (image + mounts), swapping in a `samtools`/`bcftools` image from the run when a
 task's own container doesn't ship the tool.

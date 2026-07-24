@@ -56,12 +56,23 @@ FULL_MAX_LINES = 200_000  # cap for the in-pane "full file" (F) — bounds memor
 # Lines we care about in .nextflow.log:
 #   ... [bf/407183] Submitted process > NFCORE:...:SRA_FASTQ_FTP (tag)
 #   ~> TaskHandler[id: 6; name: ...; status: RUNNING; exit: -; error: -; workDir: /abs/path]
-_SUBMIT_RE = re.compile(r"\[([0-9a-f]{2}/[0-9a-f]+)\] Submitted process > (.+)$")
+#
+# Nextflow announces a task in one of four ways (TaskProcessor.RunType plus the
+# storeDir path). Only "Submitted" tasks also get TaskHandler lines: a `-resume`
+# run logs ONLY "Cached process" lines — no handler lines at all — so a parser
+# that ignores them sees a resumed run as completely empty.
+_RUNTYPE_RE = re.compile(
+    r"\[([0-9a-f]{2}/[0-9a-f]+|skipping)\] "
+    r"(Submitted|Re-submitted|Cached|Stored) process > (.+)$"
+)
+# Every executor's handler class ends in "TaskHandler" (Local/Grid/Cached/...),
+# so matching the suffix covers SLURM, PBS, k8s, AWS Batch, etc.
 _HANDLER_RE = re.compile(
     r"TaskHandler\[id: (?P<id>\d+); name: (?P<name>.+?); "
     r"status: (?P<status>\w+); exit: (?P<exit>[^;]+); "
     r"error: (?P<error>[^;]+); workDir: (?P<workdir>[^\]]+)\]"
 )
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 @dataclass
@@ -72,6 +83,8 @@ class Task:
     exit: str = "-"
     workdir: str = ""
     order: int = field(default=0)  # first-seen order, for stable sorting
+    cached: bool = False      # reused from a previous run (-resume / storeDir)
+    attempts: int = 1         # >1 once Nextflow re-submitted it (errorStrategy retry)
 
 
 def _short_hash(workdir: str) -> str:
@@ -96,7 +109,9 @@ def is_failed(t: "Task") -> bool:
 
 
 def is_done(t: "Task") -> bool:
-    return t.status.upper() == "COMPLETED"
+    # CACHED/STORED tasks succeeded in an earlier run; -resume reuses their
+    # results, so they count as done for progress and process rollups.
+    return t.status.upper() in ("COMPLETED", "CACHED", "STORED")
 
 
 def parse_log(log_file: Path) -> list[Task]:
@@ -124,19 +139,108 @@ def parse_log(log_file: Path) -> list[Task]:
             t.exit = m["exit"].strip()
             t.workdir = m["workdir"].strip()
             continue
-        m = _SUBMIT_RE.search(line)
+        m = _RUNTYPE_RE.search(line)
         if m:
-            key = m.group(1)
+            raw_hash, runtype, name = m.group(1), m.group(2), m.group(3).strip()
+            # storeDir tasks log a literal "[skipping]" instead of a hash, so key
+            # them by name — otherwise every stored task collides on one entry.
+            key = raw_hash if raw_hash != "skipping" else f"stored:{name}"
             t = tasks.get(key)
             if t is None:
-                t = Task(hash=key, order=seen)
+                t = Task(hash=("-" if raw_hash == "skipping" else raw_hash),
+                         order=seen)
                 seen += 1
                 tasks[key] = t
             if not t.name:
-                t.name = m.group(2).strip()
+                t.name = name
+            if runtype == "Re-submitted":
+                t.attempts += 1        # errorStrategy retry: a fresh attempt
+            # Only claim CACHED/STORED while no handler line has spoken for this
+            # task — a handler is authoritative about what actually ran.
             if t.status == "-":
-                t.status = "SUBMITTED"
-    return sorted(tasks.values(), key=lambda t: t.order)
+                if runtype == "Cached":
+                    t.status, t.exit, t.cached = "CACHED", "0", True
+                elif runtype == "Stored":
+                    t.status, t.exit, t.cached = "STORED", "0", True
+                else:
+                    t.status = "SUBMITTED"
+    out = sorted(tasks.values(), key=lambda t: t.order)
+    _fill_cached_workdirs(log_file, out)
+    return out
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
+def find_work_root(log_file: Path) -> Path:
+    """Where this run's work/ tree lives.
+
+    Cached (-resume) tasks are logged without a workDir, so we have to find the
+    tree ourselves: honour an explicit -w/-work-dir on the launch command, then
+    an nf-core style "workDir : <path>" banner line, else Nextflow's default of
+    <launch dir>/work.
+    """
+    try:
+        with log_file.open("r", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > 400:
+                    break
+                if "$> nextflow" in line:
+                    toks = _strip_ansi(line).split()
+                    for flag in ("-w", "-work-dir", "--work-dir"):
+                        if flag in toks:
+                            j = toks.index(flag)
+                            if j + 1 < len(toks):
+                                return Path(toks[j + 1]).expanduser()
+                else:
+                    # nf-core prints a banner line: "workDir : /abs/path".
+                    # Anchored so a timestamped DEBUG line can't be misread.
+                    b = re.match(r"\s*workDir\s*:\s*(/\S+)", _strip_ansi(line))
+                    if b:
+                        return Path(b.group(1))
+    except OSError:
+        pass
+    return log_file.parent / "work"
+
+
+def index_workdirs(work_root: Path) -> dict[str, str]:
+    """Map 'ab/cdef12' -> the full work dir, by scanning <work>/??/* once."""
+    index: dict[str, str] = {}
+    try:
+        groups = sorted(work_root.iterdir())
+    except OSError:
+        return index
+    for g in groups:
+        if not g.is_dir() or len(g.name) != 2:
+            continue
+        try:
+            for d in g.iterdir():
+                if d.is_dir():
+                    index.setdefault(f"{g.name}/{d.name[:6]}", str(d))
+        except OSError:
+            continue
+    return index
+
+
+def _fill_cached_workdirs(log_file: Path, tasks: list[Task]) -> None:
+    """Give cached tasks their work dir. They come from an earlier run, so the
+    directories already exist — which is what makes their logs, output files and
+    resource metrics viewable at all. Scans the work tree once, and only when
+    some task actually needs it."""
+    # Only cached tasks need this. A merely-submitted task gets its workDir from
+    # the handler line moments later, and scanning the work tree for those would
+    # re-scan on every 1s refresh of a live run.
+    need = [t for t in tasks if t.cached and not t.workdir and t.hash != "-"]
+    if not need:
+        return
+    index = index_workdirs(find_work_root(log_file))
+    if not index:
+        return
+    for t in need:
+        wd = index.get(t.hash)
+        if wd:
+            t.workdir = wd
 
 
 def _read_all(path: Path, limit: int = 20000) -> str:
@@ -452,19 +556,25 @@ def _proc_label(proc: str, tasks: list[Task]) -> str:
     total = len(tasks)
     done = sum(is_done(t) for t in tasks)
     failed = sum(is_failed(t) for t in tasks)
+    cached = sum(t.cached for t in tasks)
     if failed:
         icon = f"✗ {failed} failed"
     elif done == total:
-        icon = "✓"
+        icon = "⟲ cached" if cached == total else "✓"
     else:
         icon = "…"
+    if cached and cached != total:
+        icon += f"  ({cached} cached)"
     return f"{short}   {done}/{total} {icon}"
 
 
 def _task_label(t: Task, m: "Metrics | None" = None) -> str:
     _, tag = split_name(t.name)
-    mark = "✗" if is_failed(t) else "✓" if is_done(t) else "•"
+    mark = ("✗" if is_failed(t) else "⟲" if t.cached
+            else "✓" if is_done(t) else "•")
     exit_str = "" if t.exit in ("-", "") else f" exit={t.exit}"
+    if t.attempts > 1:
+        exit_str += f"  retry×{t.attempts - 1}"
     extra = ""
     if m is not None and m.has_data():
         extra = f"   {human_duration(m.realtime_ms)}"
@@ -577,7 +687,8 @@ class NfScope(App):
         self._files_task: Task | None = None  # task whose dir backs #files
         self._last_file: Path | None = None  # last previewed file (for F = full)
         self._tool_image_cache: dict = {}  # binary -> image that provides it
-        self._trace_cache: dict[str, Metrics] = {}  # task hash -> parsed .command.trace
+        # task hash -> (status when read, metrics); see _metrics for why misses cache
+        self._trace_cache: dict[str, tuple[str, Metrics]] = {}
         self._runlog_lines: list[str] = []  # run-log lines currently loaded
         self._runlog_start: int = 0      # byte offset of the first loaded line
         self._backfilling = False        # guard: backfill moves scroll_y itself
@@ -699,7 +810,10 @@ class NfScope(App):
         nproc = len({split_name(t.name)[0] for t in self.tasks})
         done = sum(is_done(t) for t in self.tasks)
         failed = sum(is_failed(t) for t in self.tasks)
+        cached = sum(t.cached for t in self.tasks)
         summary = f"{done:,}/{n:,} tasks · {nproc} processes"
+        if cached:
+            summary += f" · {cached:,} cached"
         if failed:
             summary += f" · {failed} failed"
         if self.query_str:
@@ -732,15 +846,18 @@ class NfScope(App):
 
     def _metrics(self, t: Task) -> Metrics | None:
         """Cached .command.trace for a finished task (None until it finishes).
-        Misses aren't cached, so a trace written a moment after completion is
-        still picked up on a later refresh."""
+
+        Misses are cached too, keyed by the status they were read at: without
+        that, a run whose tasks have no trace files re-opens every one of them on
+        every 1s refresh (~35ms per tick at 10k tasks). Keying on status still
+        lets a trace written just after a task finishes be picked up."""
         if not (is_done(t) or is_failed(t)):
             return None
-        m = self._trace_cache.get(t.hash)
-        if m is None:
-            m = parse_trace(t.workdir)
-            if m.has_data():
-                self._trace_cache[t.hash] = m
+        ent = self._trace_cache.get(t.hash)
+        if ent is not None and ent[0] == t.status:
+            return ent[1]
+        m = parse_trace(t.workdir)
+        self._trace_cache[t.hash] = (t.status, m)
         return m
 
     def _sort_groups(self) -> None:
@@ -1074,13 +1191,14 @@ class NfScope(App):
                     out = p.read_text(errors="replace").splitlines()[:text_cap]
                 except OSError as e:
                     out = [f"(cannot read: {e})"]
-            self.call_from_thread(self._viewer_done, out or ["(empty)"], text_cap)
+            self.call_from_thread(self._viewer_done, out or ["(empty)"], text_cap, p)
             return
         # BAM/CRAM/BCF: decode with a samtools/bcftools image + the task's mounts.
         spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
         if spec is None:
             self.call_from_thread(self._viewer_done,
-                                  ["(no container found to decode this file)"])
+                                  ["(no container found to decode this file)"],
+                                  VIEW_MAX_LINES, p)
             return
         engine, mounts, image = spec
         # cd into the task work dir so relative references (e.g. a CRAM's
@@ -1094,13 +1212,14 @@ class NfScope(App):
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 chk = None
             if chk is None:
-                self.call_from_thread(self._viewer_done, [f"({engine} not available)"])
+                self.call_from_thread(self._viewer_done, [f"({engine} not available)"],
+                                      VIEW_MAX_LINES, p)
                 return
             if chk.returncode != 0:
                 self.call_from_thread(self._viewer_done, [
                     f"(image not present locally: {image})",
                     f"pull it first:  {engine} pull {image}",
-                ])
+                ], VIEW_MAX_LINES, p)
                 return
             cmd = ([engine, "run", "--rm"] + mounts
                    + ["-w", t.workdir, image, "sh", "-c", inner])
@@ -1115,7 +1234,7 @@ class NfScope(App):
             out = ["(viewer timed out after 120s)"]
         except Exception as e:                       # noqa: BLE001
             out = [f"(error running viewer: {e})"]
-        self.call_from_thread(self._viewer_done, out, bam_cap)
+        self.call_from_thread(self._viewer_done, out, bam_cap, p)
 
     def _pager_command(self, t: Task, p: Path, pager: str) -> str:
         """Shell string that pages a file lazily. BAM/CRAM/BCF are decoded by
@@ -1204,8 +1323,19 @@ class NfScope(App):
         with self.suspend():                # hand the real terminal to the pager
             subprocess.run(["sh", "-c", self._pager_command(t, p, pager)])
 
-    def _viewer_done(self, lines: list[str], cap: int = VIEW_MAX_LINES) -> None:
-        log = self.query_one("#log", RichLog)
+    def _viewer_done(self, lines: list[str], cap: int = VIEW_MAX_LINES,
+                     path: Path | None = None) -> None:
+        # A container decode can take seconds; by the time it lands the user may
+        # have switched views or picked another file. Dropping a stale result is
+        # right — otherwise it clobbers the run log with file content.
+        if self.view != "files":
+            return
+        if path is not None and self._last_file is not None and path != self._last_file:
+            return
+        panes = self.query("#log")
+        if not panes:
+            return
+        log = panes.first(RichLog)
         log.auto_scroll = False          # a file: stay put so we can start at the top
         log.clear()
         for h in getattr(self, "_viewer_header", []):
@@ -1465,7 +1595,11 @@ class RunInfo:
 # Lines Nextflow writes at the very end of a run — their presence in the tail
 # means the process exited cleanly (vs. being killed / the node dying).
 _DONE_MARKERS = ("Execution complete -- Goodbye", "Goodbye", "Workflow completed")
-STALE_AFTER = 90.0        # s since last write, past which an unfinished run reads as stalled
+# Seconds of log silence before an unfinished run reads as stalled. Generous on
+# purpose: a healthy run writes nothing while a long task runs or while jobs sit
+# in a scheduler queue, so a short window would flag working HPC runs as dead.
+# The picker shows the age too, so "stalled · 2d ago" vs "35m ago" stays legible.
+STALE_AFTER = 1800.0
 
 
 def _log_finished(path: Path) -> bool:

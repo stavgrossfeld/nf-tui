@@ -73,6 +73,89 @@ def test_parse_matches_real_format(tmp_path):
         "NFCORE_SAREK:SAREK:BAM_MARKDUPLICATES:GATK4_MARKDUPLICATES", "test")
 
 
+def test_parses_every_nextflow_task_line_variant(tmp_path):
+    # Nextflow announces tasks four ways (TaskProcessor.RunType + storeDir).
+    # A -resume run logs ONLY "Cached process" lines and no TaskHandler lines at
+    # all, so missing them made a resumed run render as completely empty.
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "a INFO  nextflow.Session - [ab/111111] Submitted process > P:A (s1)\n"
+        "b INFO  nextflow.Session - [ab/222222] Re-submitted process > P:A (s2)\n"
+        "c INFO  n.processor.TaskProcessor - [ab/333333] Cached process > P:B (s3)\n"
+        "d INFO  n.processor.TaskProcessor - [skipping] Stored process > P:C (s4)\n"
+    )
+    by_hash = {t.hash: t for t in parse_log(log)}
+    assert len(by_hash) == 4
+
+    assert by_hash["ab/111111"].status == "SUBMITTED"
+    assert not by_hash["ab/111111"].cached
+
+    assert by_hash["ab/222222"].attempts == 2          # a retry attempt
+
+    cached = by_hash["ab/333333"]
+    assert cached.status == "CACHED" and cached.cached and cached.exit == "0"
+    assert nf_tui.is_done(cached)                      # -resume reuses its result
+
+    stored = by_hash["-"]                              # storeDir logs no hash
+    assert stored.status == "STORED" and stored.cached
+
+
+def test_stored_tasks_do_not_collide(tmp_path):
+    # Every storeDir task logs the literal "[skipping]", so keying on the hash
+    # would fold them all into one entry.
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "a INFO - [skipping] Stored process > P:A (one)\n"
+        "b INFO - [skipping] Stored process > P:A (two)\n"
+        "c INFO - [skipping] Stored process > P:A (three)\n"
+    )
+    tasks = parse_log(log)
+    assert len(tasks) == 3
+    assert {t.name for t in tasks} == {"P:A (one)", "P:A (two)", "P:A (three)"}
+
+
+def test_parses_grid_executor_handler_lines(tmp_path):
+    # SLURM/PBS/k8s/AWS use GridTaskHandler etc. Every executor's handler class
+    # ends in "TaskHandler", which is what the parser keys on.
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "x DEBUG n.executor.GridTaskHandler - Task completed > GridTaskHandler"
+        "[id: 7; name: P:A (s1); status: COMPLETED; exit: 0; error: -; "
+        "workDir: /scratch/work/cd/ef1234abcd]\n")
+    tasks = parse_log(log)
+    assert len(tasks) == 1
+    assert tasks[0].hash == "cd/ef1234" and tasks[0].status == "COMPLETED"
+
+
+def test_cached_tasks_get_their_workdir_resolved(tmp_path):
+    # Cached lines carry no workDir, but the dirs survive from the earlier run —
+    # resolving them is what makes a resumed task's logs and files viewable.
+    wd = tmp_path / "work" / "ab" / "333333deadbeef"
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("previous run output\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text("c INFO - [ab/333333] Cached process > P:B (s3)\n")
+    t = parse_log(log)[0]
+    assert t.workdir == str(wd)
+    assert (Path(t.workdir) / ".command.log").exists()
+
+
+def test_find_work_root_honours_dash_w_and_banner(tmp_path):
+    from nf_tui import find_work_root
+    custom = tmp_path / "elsewhere"
+    explicit = tmp_path / "a.log"
+    explicit.write_text(f"  $> nextflow run main.nf -w {custom} -resume\n")
+    assert find_work_root(explicit) == custom
+
+    banner = tmp_path / "b.log"                        # nf-core prints this
+    banner.write_text(f"  workDir                   : {custom}\n")
+    assert find_work_root(banner) == custom
+
+    plain = tmp_path / "c.log"                         # default: <launch>/work
+    plain.write_text("Jul-15 10:00:00.000 [main] DEBUG - nothing useful\n")
+    assert find_work_root(plain) == tmp_path / "work"
+
+
 def test_parse_submit_line(tmp_path):
     log = tmp_path / ".nextflow.log"
     log.write_text(REAL_SUBMIT + "\n")
@@ -666,6 +749,64 @@ def test_picking_a_run_does_not_open_a_stale_file(tmp_path):
         return True
 
     assert drive(NfScope(tmp_path), steps)
+
+
+def test_late_viewer_result_does_not_clobber_another_view(tmp_path):
+    # A container decode takes seconds; if the user switches to the run log
+    # meanwhile, the arriving file content must be dropped, not painted.
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("task log\n")
+    (wd / "out.txt").write_text("FILECONTENT\n" * 20)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    def text(pane):
+        return "\n".join("".join(s.text for s in strip) for strip in pane.lines)
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause(); await app.workers.wait_for_complete(); await pilot.pause()
+        await pilot.press("g")                       # switch to the run log
+        await pilot.pause(); await pilot.pause()
+        app._viewer_done(["FILECONTENT"] * 20, 2000, wd / "out.txt")   # late result
+        await pilot.pause()
+        shown = text(app.query_one("#log", RichLog))
+        assert "full run log" in shown               # run log still there
+        assert "FILECONTENT" not in shown            # stale result dropped
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_trace_misses_are_cached(tmp_path):
+    # Without caching misses, a run whose tasks have no .command.trace re-opens
+    # every one on every 1s refresh (~35ms/tick at 10k tasks).
+    log = make_run(tmp_path, n_tasks=30, n_procs=3, with_workdirs=30)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        calls = []
+        real = nf_tui.parse_trace
+        nf_tui.parse_trace = lambda wd: (calls.append(wd), real(wd))[1]
+        try:
+            app._trace_cache.clear()             # warmed during load; start cold
+            for t in app.tasks:
+                app._metrics(t)
+            first = len(calls)
+            for t in app.tasks:                      # second pass: all cached
+                app._metrics(t)
+            assert first > 0
+            assert len(calls) == first, "misses were re-read instead of cached"
+        finally:
+            nf_tui.parse_trace = real
+        return True
+
+    assert drive(NfScope(log), steps)
 
 
 # ---- scale -----------------------------------------------------------------
