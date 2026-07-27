@@ -960,7 +960,10 @@ def test_progress_counts_throughput_and_queue_eta(tmp_path):
     log.write_text("\n".join(lines) + "\n")
 
     p = progress_of(parse_log(log))
-    assert p.total == 6 and p.done == 4 and p.running == 2
+    assert p.total == 6 and p.done == 4
+    # without a filesystem check the log can only say "in flight", not whether
+    # a task has actually started, so both land in pending
+    assert p.in_flight == 2 and p.pending == 2 and p.running == 0
     assert p.pct == 67
     assert p.per_min == pytest.approx(1.0, abs=0.01)   # 3 gaps over 3 minutes
     # ETA covers the 2 queued tasks only, not the unknowable rest of the run
@@ -1020,6 +1023,84 @@ def test_picker_rows_show_task_counts(tmp_path):
     assert runs and runs[0].progress is not None
     stats = _run_stats(runs[0])
     assert "tasks" in stats and "% done" in stats
+
+
+# ---- queue view (pending vs running) ---------------------------------------
+
+def _inflight_log(tmp_path: Path, n: int) -> Path:
+    """n submitted tasks with staged work dirs, none complete."""
+    lines = []
+    for i in range(n):
+        wd = tmp_path / "work" / f"{i:02d}" / f"{i:06d}beef"
+        wd.mkdir(parents=True)
+        lines.append(f"Jul-15 10:00:0{i}.000 [Task submitter] INFO - "
+                     f"[{i:02d}/{i:06d}] Submitted process > P:WORK (s{i})")
+    log = tmp_path / ".nextflow.log"
+    log.write_text("\n".join(lines) + "\n")
+    return log
+
+
+def test_task_state_uses_command_begin(tmp_path):
+    from nf_tui import resolve_workdir, task_state
+    log = _inflight_log(tmp_path, 3)
+    tasks = parse_log(log)
+    root = tmp_path / "work"
+
+    # nothing started yet: all pending
+    for t in tasks:
+        t.workdir = resolve_workdir(root, t.hash)
+        assert t.workdir, "hash should resolve to its staged work dir"
+        assert task_state(t) == "pending"
+
+    # Nextflow writes .command.begin when a task actually starts
+    (Path(tasks[0].workdir) / ".command.begin").write_text("")
+    assert task_state(tasks[0]) == "running"
+    assert task_state(tasks[1]) == "pending"
+
+
+def test_progress_splits_running_from_pending(tmp_path):
+    from nf_tui import progress_of, resolve_workdir
+    log = _inflight_log(tmp_path, 4)
+    tasks = parse_log(log)
+    for t in tasks:
+        t.workdir = resolve_workdir(tmp_path / "work", t.hash)
+    for t in tasks[:2]:                       # two actually executing
+        (Path(t.workdir) / ".command.begin").write_text("")
+
+    p = progress_of(tasks, check_fs=True)
+    assert p.running == 2 and p.pending == 2 and p.in_flight == 4
+    # without the filesystem the log can't tell them apart
+    assert progress_of(tasks, check_fs=False).pending == 4
+
+
+def test_queue_view_lists_running_then_pending(tmp_path):
+    from nf_tui import resolve_workdir
+    log = _inflight_log(tmp_path, 3)
+
+    def text(pane):
+        return "\n".join("".join(s.text for s in strip) for strip in pane.lines)
+
+    # Mark one task started on disk WITHOUT telling the app where it lives: an
+    # in-flight task has no workDir in the log, so the app must resolve it by
+    # hash itself. (Pre-setting workdir here would hide exactly that bug.)
+    (tmp_path / "work" / "00" / "000000beef" / ".command.begin").write_text("")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        assert not any(t.workdir for t in parse_log(log)), "log has no workDirs"
+        await pilot.press("p")                 # the queue view
+        await pilot.pause()
+        assert app.view == "queue"
+        shown = text(app.query_one("#log", RichLog))
+        assert "1 running" in shown and "2 pending" in shown
+        # running sorts above pending
+        body = [l for l in shown.splitlines()
+                if l.startswith(("running", "pending"))]
+        assert body and body[0].startswith("running")
+        assert sum(l.startswith("pending") for l in body) == 2
+        return True
+
+    assert drive(NfScope(log), steps)
 
 
 # ---- scale -----------------------------------------------------------------

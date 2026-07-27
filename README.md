@@ -35,9 +35,14 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   reference genome resolves). Press `L` to open any file full in `less`.
 - **Live progress** — the header tracks `done/total (%)`, and while a pipeline
   runs it adds what's in flight, throughput, and an ETA for the queued work:
-  `34/36 seen (94%) · 2 running · 40.8/min · ~2.9s for queued`. Mid-run totals
+  `15/20 seen (75%) · 5 running · 41.8/min · ~7.2s for queued`. Mid-run totals
   are labelled *seen*, not *tasks* — Nextflow only announces tasks as channels
   emit them, so the denominator is still growing.
+- **Queue view** (`p`) — a `squeue`-style list of what's in flight: running
+  tasks first with live elapsed times, then pending, with counts and
+  throughput. Nextflow's log can't tell queued from executing (it records a
+  task's outcome only when it finishes), so nf-tui reads `.command.begin` in
+  each work dir — the file Nextflow writes the moment a task starts.
 - **Run picker** — with no path, it finds every run under a directory and
   lets you choose (and hop between runs without quitting). Each run is marked
   **running** / **stalled** / **complete** / **failed** and shows its task
@@ -131,6 +136,7 @@ Notes for clusters:
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
 | `s` | cycle sort — submission order → slowest → peak memory (heaviest process on top) |
 | `e` | jump to the next failed task and show why it failed |
+| `p` | queue view — what's running vs pending right now, with elapsed times |
 | `L` | open in `less` — the task's `.command.log`, the whole run log, or the selected file (lazy paging + search) |
 | `F` | load the whole selected file in-pane (uncapped; the browser's `L`) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |

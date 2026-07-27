@@ -193,28 +193,75 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
 
+QUEUE_MAX_ROWS = 300      # rows rendered in the queue view
+QUEUE_FS_LIMIT = 2_000    # above this many in-flight tasks, skip the fs check
+
+
+def task_state(t: Task) -> str:
+    """A scheduler-style state: cached / failed / done / running / pending.
+
+    The log can't tell "queued" from "executing" — Nextflow only writes a
+    TaskHandler line when a task *completes*. But it writes .command.begin in
+    the work dir the moment a task starts, so that file is the real signal.
+    Verified against a run pinned to maxForks 3: exactly 3 showed as running.
+    """
+    if t.cached:
+        return "cached"
+    if is_failed(t):
+        return "failed"
+    if is_done(t):
+        return "done"
+    if t.workdir:
+        try:
+            if (Path(t.workdir) / ".command.begin").exists():
+                return "running"
+        except OSError:
+            pass
+    return "pending"
+
+
+def task_started_at(t: Task) -> float | None:
+    """When a running task began, from .command.begin's mtime."""
+    if not t.workdir:
+        return None
+    try:
+        return (Path(t.workdir) / ".command.begin").stat().st_mtime
+    except OSError:
+        return None
+
+
 @dataclass
 class Progress:
     total: int = 0
     done: int = 0
     failed: int = 0
     cached: int = 0
-    running: int = 0        # submitted or running — work still outstanding
+    running: int = 0        # started executing (.command.begin written)
+    pending: int = 0        # submitted to the executor, not started yet
     per_min: float | None = None   # completions/min, from the recent window
     eta_secs: float | None = None  # to clear the CURRENT queue, not the whole run
+
+    @property
+    def in_flight(self) -> int:
+        return self.running + self.pending
 
     @property
     def pct(self) -> int:
         return round(100 * self.done / self.total) if self.total else 0
 
 
-def progress_of(tasks: list[Task], window: float = 300.0) -> Progress:
+def progress_of(tasks: list[Task], window: float = 300.0,
+                check_fs: bool = False) -> Progress:
     """Counts, throughput and a queue ETA.
+
+    With check_fs, in-flight tasks are split into running vs pending by looking
+    for .command.begin (one stat each); otherwise they all count as pending,
+    which is what the log alone can tell us.
 
     The ETA covers only the tasks already submitted. Nextflow's total is not
     knowable mid-run — channels keep emitting — so a "time until the pipeline
     finishes" would be invented. This answers the honest question: at the
-    current rate, how long to drain what's queued right now.
+    current rate, how long to drain what's in flight right now.
     """
     p = Progress(total=len(tasks))
     finished: list[float] = []
@@ -226,7 +273,10 @@ def progress_of(tasks: list[Task], window: float = 300.0) -> Progress:
         if t.cached:
             p.cached += 1
         if t.status.upper() in ("RUNNING", "SUBMITTED"):
-            p.running += 1
+            if check_fs and task_state(t) == "running":
+                p.running += 1
+            else:
+                p.pending += 1
         if t.finished_at is not None:
             finished.append(t.finished_at)
 
@@ -238,8 +288,8 @@ def progress_of(tasks: list[Task], window: float = 300.0) -> Progress:
         span = recent[-1] - recent[0]
         if span > 0:
             p.per_min = (len(recent) - 1) / span * 60
-            if p.per_min > 0 and p.running:
-                p.eta_secs = p.running / p.per_min * 60
+            if p.per_min > 0 and p.in_flight:
+                p.eta_secs = p.in_flight / p.per_min * 60
     return p
 
 
@@ -351,6 +401,25 @@ def index_workdirs(work_root: Path) -> dict[str, str]:
         except OSError:
             continue
     return index
+
+
+def resolve_workdir(work_root: Path, task_hash: str) -> str | None:
+    """'ab/cdef12' -> the full work dir, by listing just <work>/ab/.
+
+    Targeted on purpose: an in-flight task has no workDir in the log (Nextflow
+    only records it when the task completes), and scanning the whole work tree
+    on every refresh of a live run would be far too expensive.
+    """
+    if "/" not in task_hash:
+        return None
+    group, prefix = task_hash.split("/", 1)
+    try:
+        for d in (work_root / group).iterdir():
+            if d.name.startswith(prefix) and d.is_dir():
+                return str(d)
+    except OSError:
+        pass
+    return None
 
 
 def _fill_cached_workdirs(log_file: Path, tasks: list[Task]) -> None:
@@ -778,6 +847,7 @@ class NfScope(App):
         Binding("L", "pager", "Open in less"),
         Binding("F", "full_file", "Full file"),
         Binding("g", "view_run", "Run log"),
+        Binding("p", "view_queue", "Queue"),
         Binding("z,m", "zoom", "Full screen"),
         Binding("f", "toggle_follow", "Follow"),
         Binding("s", "cycle_sort", "Sort"),
@@ -803,7 +873,10 @@ class NfScope(App):
         self.sort_mode = "order"    # order | slowest | memory  (s cycles)
         self.web = bool(os.environ.get("NF_TUI_WEB"))  # served in a browser: no less
         self.follow = True
-        self.view = "task"          # "task" | "container" | "files" | "run"
+        self.view = "task"   # task | container | files | run | queue
+        self._progress: Progress | None = None
+        self._work_root: Path | None = None      # this run's work/ tree
+        self._workdir_cache: dict[str, str] = {}  # task hash -> resolved work dir
         self._sig: tuple | None = None   # skip tree work when nothing changed
         self._built_filter: tuple | None = None  # (failed_only, query) at last full build
         self._shown: tuple | None = None # what the log pane currently shows
@@ -894,6 +967,8 @@ class NfScope(App):
         # whose short hash matches one in the old run would show stale metrics,
         # and the old run's file list could be reopened.
         self._trace_cache = {}
+        self._work_root = None
+        self._workdir_cache = {}
         self._files = []
         self._files_task = None
         self._last_file = None
@@ -950,9 +1025,17 @@ class NfScope(App):
         if self.sort_mode != "order":
             self._sort_groups()
         # Header summary so the TOTAL (across all process groups) is visible.
-        prog = progress_of(self.tasks)
-        nproc = len({split_name(t.name)[0] for t in self.tasks})
         live = self._run_is_live()
+        # Splitting pending from running costs a lookup per in-flight task, so
+        # only do it for a live run, and not when the queue is enormous.
+        inflight = [t for t in self.tasks
+                    if t.status.upper() in ("RUNNING", "SUBMITTED")]
+        check_fs = live and len(inflight) <= QUEUE_FS_LIMIT
+        if check_fs:
+            self._resolve_inflight_workdirs(inflight)
+        prog = progress_of(self.tasks, check_fs=check_fs)
+        self._progress = prog
+        nproc = len({split_name(t.name)[0] for t in self.tasks})
         # While a run is live the denominator keeps growing — Nextflow only
         # announces tasks as channels emit them — so call it what it is
         # ("seen") rather than implying the run is 93% done when it isn't.
@@ -967,6 +1050,8 @@ class NfScope(App):
         if live:
             if prog.running:
                 summary += f" · {prog.running:,} running"
+            if prog.pending:
+                summary += f" · {prog.pending:,} pending"
             if prog.per_min:
                 summary += f" · {prog.per_min:.1f}/min"
             if prog.eta_secs:
@@ -1175,6 +1260,69 @@ class NfScope(App):
             return (time.time() - self.log_file.stat().st_mtime) < 20
         except OSError:
             return False
+
+    def _resolve_inflight_workdirs(self, inflight: list[Task]) -> None:
+        """Give in-flight tasks their work dir so their state is knowable.
+
+        Their workDir isn't in the log yet — Nextflow records it on completion —
+        so it's looked up by hash and cached; a work dir never moves."""
+        if not inflight:
+            return
+        if self._work_root is None and self.log_file is not None:
+            self._work_root = find_work_root(self.log_file)
+        if self._work_root is None:
+            return
+        for t in inflight:
+            if t.workdir:
+                continue
+            wd = self._workdir_cache.get(t.hash)
+            if wd is None:
+                wd = resolve_workdir(self._work_root, t.hash)
+                if wd:
+                    self._workdir_cache[t.hash] = wd
+            if wd:
+                t.workdir = wd
+
+    def _show_queue(self, log: RichLog) -> None:
+        """A scheduler-style view of what's in flight — running first (longest
+        first), then pending, like `squeue` for the pipeline."""
+        log.auto_scroll = False
+        log.clear()
+        rows: list[tuple[int, float, str]] = []
+        now = time.time()
+        counts = {"running": 0, "pending": 0}
+        for t in self.tasks:
+            if t.status.upper() not in ("RUNNING", "SUBMITTED"):
+                continue
+            state = task_state(t)
+            if state not in counts:
+                continue
+            counts[state] += 1
+            began = task_started_at(t) if state == "running" else None
+            elapsed = (now - began) if began else 0.0
+            proc, tag = split_name(t.name)
+            rows.append((
+                0 if state == "running" else 1,
+                -elapsed,
+                f"{state:<8} {human_duration(elapsed * 1000) if began else '—':>8}  "
+                f"{(tag or t.hash)[:28]:<28} {proc.split(':')[-1][:30]:<30} {t.hash}",
+            ))
+        p = self._progress
+        head = [f"──────── queue: {counts['running']:,} running · "
+                f"{counts['pending']:,} pending"
+                + (f" · {p.per_min:.1f}/min" if p and p.per_min else "")
+                + " ────────",
+                f"{'STATE':<8} {'ELAPSED':>8}  {'TASK':<28} {'PROCESS':<30} HASH"]
+        if not rows:
+            head.append("")
+            head.append("(nothing in flight — every announced task has finished)")
+            head.append("Nextflow only announces tasks as it submits them, so a "
+                        "running pipeline may still have work it hasn't queued.")
+        rows.sort(key=lambda r: (r[0], r[1]))
+        body = [r[2] for r in rows[:QUEUE_MAX_ROWS]]
+        if len(rows) > QUEUE_MAX_ROWS:
+            body.append(f"… and {len(rows) - QUEUE_MAX_ROWS:,} more in flight")
+        log.write("\n".join(head + body))
 
     def _runlog_header(self) -> str:
         """Header line: says where in the file the loaded window starts, so the
@@ -1574,6 +1722,14 @@ class NfScope(App):
             return
         log = panes.first(RichLog)
 
+        # Queue: independent of the tree, redrawn every tick — states and
+        # elapsed times move on their own.
+        if self.view == "queue":
+            self._shown = ("queue",)
+            self._tailer = None
+            self._show_queue(log)
+            return
+
         # Run log: the whole .nextflow.log, independent of tree selection.
         if self.view == "run":
             if self._shown != ("run",):
@@ -1679,8 +1835,8 @@ class NfScope(App):
             self._set_view("task", "task log")   # file list -> task view + tree
             tree.focus()
             return
-        if self.view == "run":
-            self._set_view("task", "task log")   # run log -> task view + tree
+        if self.view in ("run", "queue"):
+            self._set_view("task", "task log")   # run/queue -> task view + tree
             tree.focus()
             return
         if log.has_focus:
@@ -1712,6 +1868,9 @@ class NfScope(App):
 
     def action_view_run(self) -> None:
         self._set_view("run", "full run log")
+
+    def action_view_queue(self) -> None:
+        self._set_view("queue", "queue — what is in flight")
 
     def action_zoom(self) -> None:
         # Toggle full-screen for whichever pane is focused (tree / file list /
