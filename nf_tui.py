@@ -173,6 +173,66 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
 
+# When a task fails Nextflow writes a multi-line report to the log: the cause,
+# the command it ran, the exit status, stderr, and the work dir. It's the single
+# most useful thing in the file, and it ends at the next timestamped line.
+_ERR_START_RE = re.compile(r"ERROR .*? - Error executing process > '(?P<name>.+)'")
+_TIMESTAMPED_RE = re.compile(r"^[A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ ")
+ERROR_MAX_LINES = 120
+
+
+def parse_errors(log_file: Path) -> dict[str, str]:
+    """Map a failed task's short hash -> its 'Error executing process' block.
+
+    Keyed by the block's own "Work dir:" so it lands on the exact task; blocks
+    without one fall back to being keyed by process name.
+    """
+    out: dict[str, str] = {}
+    try:
+        lines = log_file.read_text(errors="replace").splitlines()
+    except OSError:
+        return out
+    i, n = 0, len(lines)
+    while i < n:
+        m = _ERR_START_RE.search(lines[i])
+        if not m:
+            i += 1
+            continue
+        block = [_strip_ansi(lines[i].split(" - ", 1)[-1])]
+        j = i + 1
+        while j < n and not _TIMESTAMPED_RE.match(lines[j]):
+            block.append(_strip_ansi(lines[j]))
+            j += 1
+        # the line after "Work dir:" is the path — that identifies the task
+        key = None
+        for k, line in enumerate(block):
+            if line.strip() == "Work dir:" and k + 1 < len(block):
+                wd = block[k + 1].strip()
+                if wd:
+                    key = _short_hash(wd)
+                break
+        text = "\n".join(block).rstrip()
+        name = m.group("name").strip()
+        if key:
+            out[key] = text
+        # Also index by process name: a retried attempt fails under the same
+        # name but a different work dir, and Nextflow reports only once.
+        out.setdefault(f"name:{name}", text)
+        i = j
+    return out
+
+
+def error_summary(block: str) -> str:
+    """The one line worth putting in a header: what actually went wrong."""
+    lines = [l.strip() for l in block.splitlines()]
+    for k, line in enumerate(lines):
+        if line == "Caused by:":
+            for follow in lines[k + 1:]:
+                if follow:
+                    return follow
+    return lines[0] if lines else ""
+
+
 def find_work_root(log_file: Path) -> Path:
     """Where this run's work/ tree lives.
 
@@ -651,6 +711,7 @@ class NfScope(App):
         Binding("z,m", "zoom", "Full screen"),
         Binding("f", "toggle_follow", "Follow"),
         Binding("s", "cycle_sort", "Sort"),
+        Binding("e", "next_failed", "Next failure"),
         Binding("x", "toggle_failed", "Failed only"),
         Binding("o", "open_workdir", "Work dir"),
         Binding("r", "refresh", "Refresh"),
@@ -689,6 +750,8 @@ class NfScope(App):
         self._tool_image_cache: dict = {}  # binary -> image that provides it
         # task hash -> (status when read, metrics); see _metrics for why misses cache
         self._trace_cache: dict[str, tuple[str, Metrics]] = {}
+        self._errors: dict[str, str] = {}     # failed task -> its error report
+        self._errors_stat: tuple | None = None   # log stat the errors were read at
         self._runlog_lines: list[str] = []  # run-log lines currently loaded
         self._runlog_start: int = 0      # byte offset of the first loaded line
         self._backfilling = False        # guard: backfill moves scroll_y itself
@@ -844,6 +907,24 @@ class NfScope(App):
             tasks = [t for t in tasks if q in t.name.lower() or q in t.hash.lower()]
         return tasks
 
+    def _error_block(self, t: Task) -> tuple[str, bool] | None:
+        """(report, is_this_exact_task) for a failed task, if the log has one.
+
+        Parsed lazily (a full scan) and cached until the log grows, since only
+        failed tasks need it. A retried attempt has no report of its own, so we
+        fall back to the one for its process — flagged, because it describes a
+        sibling attempt rather than this exact task."""
+        if not is_failed(t) or self.log_file is None:
+            return None
+        if self._errors_stat != self._log_stat:
+            self._errors = parse_errors(self.log_file)
+            self._errors_stat = self._log_stat
+        exact = self._errors.get(t.hash)
+        if exact is not None:
+            return exact, True
+        loose = self._errors.get(f"name:{t.name}")
+        return (loose, False) if loose is not None else None
+
     def _metrics(self, t: Task) -> Metrics | None:
         """Cached .command.trace for a finished task (None until it finishes).
 
@@ -940,6 +1021,22 @@ class NfScope(App):
                 bits.append(f"{human_size(m.peak_rss_kb * 1024)} peak")
             log.write("  ·  ".join(bits))
         if self.view == "task":
+            # A failed task: lead with why it failed. That's what you opened it
+            # for — otherwise the reason is buried in the run log.
+            found = self._error_block(t)
+            if found:
+                err, exact = found
+                log.write("──────── ✗ why this task failed ────────" if exact else
+                          "──────── ✗ error reported for another attempt of this "
+                          "process (Nextflow reports once) ────────")
+                lines = err.splitlines()
+                log.write("\n".join(lines[:ERROR_MAX_LINES]))
+                if len(lines) > ERROR_MAX_LINES:
+                    log.write(f"… ({len(lines) - ERROR_MAX_LINES} more lines of the "
+                              f"error report — press g for the full run log)")
+            elif is_failed(t):
+                log.write("──────── ✗ failed — no error report in the log "
+                          "(see the task output below) ────────")
             sh = Path(t.workdir) / ".command.sh" if t.workdir else None
             if sh and sh.exists():
                 log.write("──────── .command.sh ────────")
@@ -951,7 +1048,10 @@ class NfScope(App):
     def _load_task(self, t: Task) -> None:
         """Fully redraw the log pane for a task in the current view."""
         log = self.query_one("#log", RichLog)
-        log.auto_scroll = self.follow    # tailing views follow new lines
+        # A failed task is finished, so there's nothing to tail — start at the
+        # top, where the error report is, instead of the end of its output.
+        show_error = self.view == "task" and is_failed(t)
+        log.auto_scroll = self.follow and not show_error
         log.highlight = True             # small task logs — highlight is fine
         log.clear()
         self._log_header(log, t)
@@ -970,6 +1070,9 @@ class NfScope(App):
                           "press c for the container log, o to open the work dir)")
             else:
                 log.write("(no task output yet — press c for the container log)")
+        if show_error:
+            # Land on the error, not wherever the previous content sat.
+            self.call_after_refresh(lambda: log.scroll_home(animate=False))
 
     def _run_is_live(self) -> bool:
         """A run is live if a task is still running/submitted, or its log was
@@ -1529,6 +1632,30 @@ class NfScope(App):
         n = sum(is_failed(t) for t in self.tasks)
         self.notify(f"showing {'failed only' if self.failed_only else 'all'} "
                     f"({n} failed)")
+
+    def action_next_failed(self) -> None:
+        """Jump the tree to the next failed task (wrapping), and show why it
+        failed. On a big run this beats hunting for the ✗ by eye."""
+        tree = self.query_one("#tasks", Tree)
+        leaves = [n for grp in tree.root.children for n in grp.children
+                  if isinstance(n.data, Task)]
+        failed = [n for n in leaves if is_failed(n.data)]
+        if not failed:
+            self.notify("no failed tasks")
+            return
+        line = tree.cursor_line
+        nxt = next((n for n in failed if n.line > line), failed[0])
+        for grp in tree.root.children:        # a collapsed group hides its leaves
+            grp.expand()
+        tree.move_cursor(nxt)
+        tree.focus()
+        if self.view not in ("task", "files"):
+            self._set_view("task", "task log")
+        t = nxt.data
+        found = self._error_block(t)
+        why = error_summary(found[0]) if found else f"exit={t.exit}"
+        self.notify(f"{split_name(t.name)[0].split(':')[-1]}: {why}",
+                    severity="warning")
 
     def action_cycle_sort(self) -> None:
         order = ["order", "slowest", "memory"]

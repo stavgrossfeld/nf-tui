@@ -22,6 +22,9 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   to the top, so the bottleneck is one keypress away.
 - **Per-task logs** — task output (`.command.log` with container-pull and
   JVM/Fontconfig noise filtered out) or the raw container log.
+- **Failure triage** — `e` jumps to the next failed task and leads with *why*
+  it failed: Nextflow's own error report (cause, exit status, the command, and
+  stderr), lifted out of the run log and shown above the task's output.
 - **Run log** — opens on it, at the tail, where a run says how it went; a live
   run follows new lines as they land. Scroll up and earlier lines backfill a
   chunk at a time, back to the first line of the run. `L` pages the whole file
@@ -121,6 +124,7 @@ Notes for clusters:
 | `t` / `c` / `g` | task log / container log / full run log |
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
 | `s` | cycle sort — submission order → slowest → peak memory (heaviest process on top) |
+| `e` | jump to the next failed task and show why it failed |
 | `L` | open the selected file — or the whole run log — in `less` (lazy paging + search) |
 | `F` | load the whole selected file in-pane (uncapped; the browser's `L`) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |
