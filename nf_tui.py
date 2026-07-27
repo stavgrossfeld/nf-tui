@@ -73,6 +73,7 @@ _HANDLER_RE = re.compile(
     r"error: (?P<error>[^;]+); workDir: (?P<workdir>[^\]]+)\]"
 )
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_TIMESTAMP_RE = re.compile(r"^([A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{1,6})")
 
 
 @dataclass
@@ -85,6 +86,23 @@ class Task:
     order: int = field(default=0)  # first-seen order, for stable sorting
     cached: bool = False      # reused from a previous run (-resume / storeDir)
     attempts: int = 1         # >1 once Nextflow re-submitted it (errorStrategy retry)
+    finished_at: float | None = None   # log time of its completion, for throughput
+
+
+def _line_time(line: str) -> float | None:
+    """Epoch seconds from a log line's 'Jul-15 15:24:40.083' prefix.
+
+    Nextflow omits the year, so a fixed leap year is used — only differences
+    between timestamps are ever used, so the absolute value doesn't matter.
+    """
+    m = _TIMESTAMP_RE.match(line)
+    if not m:
+        return None
+    try:
+        return datetime.strptime("2024 " + m.group(1),
+                                 "%Y %b-%d %H:%M:%S.%f").timestamp()
+    except ValueError:
+        return None
 
 
 def _short_hash(workdir: str) -> str:
@@ -138,6 +156,8 @@ def parse_log(log_file: Path) -> list[Task]:
             t.status = m["status"].strip()
             t.exit = m["exit"].strip()
             t.workdir = m["workdir"].strip()
+            if t.status.upper() == "COMPLETED":
+                t.finished_at = _line_time(line) or t.finished_at
             continue
         m = _RUNTYPE_RE.search(line)
         if m:
@@ -171,6 +191,56 @@ def parse_log(log_file: Path) -> list[Task]:
 
 def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
+
+
+@dataclass
+class Progress:
+    total: int = 0
+    done: int = 0
+    failed: int = 0
+    cached: int = 0
+    running: int = 0        # submitted or running — work still outstanding
+    per_min: float | None = None   # completions/min, from the recent window
+    eta_secs: float | None = None  # to clear the CURRENT queue, not the whole run
+
+    @property
+    def pct(self) -> int:
+        return round(100 * self.done / self.total) if self.total else 0
+
+
+def progress_of(tasks: list[Task], window: float = 300.0) -> Progress:
+    """Counts, throughput and a queue ETA.
+
+    The ETA covers only the tasks already submitted. Nextflow's total is not
+    knowable mid-run — channels keep emitting — so a "time until the pipeline
+    finishes" would be invented. This answers the honest question: at the
+    current rate, how long to drain what's queued right now.
+    """
+    p = Progress(total=len(tasks))
+    finished: list[float] = []
+    for t in tasks:
+        if is_done(t):
+            p.done += 1
+        if is_failed(t):
+            p.failed += 1
+        if t.cached:
+            p.cached += 1
+        if t.status.upper() in ("RUNNING", "SUBMITTED"):
+            p.running += 1
+        if t.finished_at is not None:
+            finished.append(t.finished_at)
+
+    if len(finished) >= 2:
+        finished.sort()
+        recent = [f for f in finished if finished[-1] - f <= window]
+        if len(recent) < 3:                 # a slow run: fall back to the last few
+            recent = finished[-5:]
+        span = recent[-1] - recent[0]
+        if span > 0:
+            p.per_min = (len(recent) - 1) / span * 60
+            if p.per_min > 0 and p.running:
+                p.eta_secs = p.running / p.per_min * 60
+    return p
 
 
 # When a task fails Nextflow writes a multi-line report to the log: the cause,
@@ -880,16 +950,27 @@ class NfScope(App):
         if self.sort_mode != "order":
             self._sort_groups()
         # Header summary so the TOTAL (across all process groups) is visible.
-        n = len(self.tasks)
+        prog = progress_of(self.tasks)
         nproc = len({split_name(t.name)[0] for t in self.tasks})
-        done = sum(is_done(t) for t in self.tasks)
-        failed = sum(is_failed(t) for t in self.tasks)
-        cached = sum(t.cached for t in self.tasks)
-        summary = f"{done:,}/{n:,} tasks · {nproc} processes"
-        if cached:
-            summary += f" · {cached:,} cached"
-        if failed:
-            summary += f" · {failed} failed"
+        live = self._run_is_live()
+        # While a run is live the denominator keeps growing — Nextflow only
+        # announces tasks as channels emit them — so call it what it is
+        # ("seen") rather than implying the run is 93% done when it isn't.
+        noun = "seen" if live else "tasks"
+        summary = (f"{prog.done:,}/{prog.total:,} {noun} ({prog.pct}%) "
+                   f"· {nproc} processes")
+        if prog.cached:
+            summary += f" · {prog.cached:,} cached"
+        if prog.failed:
+            summary += f" · {prog.failed} failed"
+        # Live extras: what's in flight, how fast, and how long to drain it.
+        if live:
+            if prog.running:
+                summary += f" · {prog.running:,} running"
+            if prog.per_min:
+                summary += f" · {prog.per_min:.1f}/min"
+            if prog.eta_secs:
+                summary += f" · ~{human_duration(prog.eta_secs * 1000)} for queued"
         if self.query_str:
             summary += f' · filter "{self.query_str}": {len(self._visible_tasks())} shown'
         if self.sort_mode != "order":
@@ -1747,6 +1828,7 @@ class RunInfo:
     status: str           # OK / ERR / ? (from .nextflow/history)
     mtime: float
     finished: bool        # log tail has a Nextflow completion marker
+    progress: "Progress | None" = None   # task counts, if they were computed
 
 
 # Lines Nextflow writes at the very end of a run — their presence in the tail
@@ -1757,6 +1839,7 @@ _DONE_MARKERS = ("Execution complete -- Goodbye", "Goodbye", "Workflow completed
 # in a scheduler queue, so a short window would flag working HPC runs as dead.
 # The picker shows the age too, so "stalled · 2d ago" vs "35m ago" stays legible.
 STALE_AFTER = 1800.0
+PICKER_COUNT_MAX_BYTES = 80_000_000   # above this, skip a run's task counts
 
 
 def _log_finished(path: Path) -> bool:
@@ -1783,6 +1866,26 @@ def _ago(seconds: float) -> str:
     if s < 86400:
         return f"{s // 3600}h ago"
     return f"{s // 86400}d ago"
+
+
+def _run_stats(r: "RunInfo") -> str:
+    """'24 tasks · 100% done · 2 failed   ' for a picker row (empty if not
+    counted). A run that never finished only ever announced part of its work,
+    so its total is labelled "seen" — otherwise a run that died early reads as
+    100% done just because everything it managed to start also finished."""
+    p = r.progress
+    if p is None or not p.total:
+        return ""
+    done_run = r.status in ("OK", "ERR") or r.finished
+    bits = [f"{p.total:,} tasks" if done_run else f"{p.total:,} seen",
+            f"{p.pct}% done"]
+    if p.cached:
+        bits.append(f"{p.cached:,} cached")
+    if p.failed:
+        bits.append(f"{p.failed} failed")
+    if p.running:
+        bits.append(f"{p.running:,} running")
+    return " · ".join(bits) + "   —   "
 
 
 def run_state(r: "RunInfo", now: float | None = None) -> tuple[str, str]:
@@ -1898,6 +2001,14 @@ def gather_runs(base: Path) -> list[RunInfo]:
         except OSError:
             mtime = 0.0
         rot = "" if p.name == ".nextflow.log" else f" ({p.name})"
+        # Task counts need a full parse. Cheap in practice (~35ms for a
+        # 10k-task log), but skip enormous logs so the picker stays instant.
+        prog = None
+        try:
+            if p.stat().st_size <= PICKER_COUNT_MAX_BYTES:
+                prog = progress_of(parse_log(p))
+        except OSError:
+            pass
         infos.append(RunInfo(
             path=p,
             runname=(runname or p.parent.name) + rot,
@@ -1905,6 +2016,7 @@ def gather_runs(base: Path) -> list[RunInfo]:
             status=status,
             mtime=mtime,
             finished=_log_finished(p),
+            progress=prog,
         ))
     infos.sort(key=lambda r: r.mtime, reverse=True)
     return infos
@@ -1940,7 +2052,7 @@ class RunPickerScreen(Screen):
             loc = str(r.path.parent).replace(str(Path.home()), "~")
             ol.add_option(Option(
                 f"{mark} {word:<9} {when} ({age})   {r.runname}   {r.pipeline}"
-                f"\n     {loc}",
+                f"\n     {_run_stats(r)}{loc}",
                 id=str(i),
             ))
         if self.runs:

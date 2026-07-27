@@ -33,10 +33,16 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   and gzip on the host, and **BAM / CRAM / BCF decoded with `samtools` /
   `bcftools` from the task's own container** (reusing its mounts, so the
   reference genome resolves). Press `L` to open any file full in `less`.
+- **Live progress** — the header tracks `done/total (%)`, and while a pipeline
+  runs it adds what's in flight, throughput, and an ETA for the queued work:
+  `34/36 seen (94%) · 2 running · 40.8/min · ~2.9s for queued`. Mid-run totals
+  are labelled *seen*, not *tasks* — Nextflow only announces tasks as channels
+  emit them, so the denominator is still growing.
 - **Run picker** — with no path, it finds every run under a directory and
   lets you choose (and hop between runs without quitting). Each run is marked
-  **running** / **stalled** / **complete** / **failed**, so a crashed run
-  (killed, OOM, dead node) is obvious at a glance.
+  **running** / **stalled** / **complete** / **failed** and shows its task
+  count, percent done, and failures, so a crashed run (killed, OOM, dead node)
+  is obvious at a glance.
 - **Find any task** — `/` filters the tree by process name or hash as you
   type; `x` filters to failed tasks; `z`/`m` full-screens any pane; `o` opens
   a task's work dir.

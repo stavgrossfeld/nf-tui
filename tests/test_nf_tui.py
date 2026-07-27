@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import nf_tui
+import pytest
 from generate_run import make_run
 from nf_tui import (NfScope, RunPickerScreen, Task, is_failed,
                     parse_container_run, parse_log, read_back, split_name)
@@ -940,6 +941,85 @@ def test_first_task_is_selected_on_open(tmp_path):
         return True
 
     assert drive(NfScope(log), steps)
+
+
+def test_progress_counts_throughput_and_queue_eta(tmp_path):
+    from nf_tui import parse_log, progress_of
+    # four completions one minute apart, plus two still running
+    lines = []
+    for i, minute in enumerate(range(4)):
+        wd = tmp_path / "work" / "ab" / f"{i:06d}aaaa"
+        lines.append(
+            f"Jul-15 10:{minute:02d}:00.000 [Task monitor] DEBUG - Task completed > "
+            f"TaskHandler[id: {i}; name: P:A (s{i}); status: COMPLETED; exit: 0; "
+            f"error: -; workDir: {wd}]")
+    for i in (8, 9):
+        lines.append(f"Jul-15 10:04:00.000 [Task submitter] INFO - "
+                     f"[cd/{i:06d}] Submitted process > P:A (s{i})")
+    log = tmp_path / ".nextflow.log"
+    log.write_text("\n".join(lines) + "\n")
+
+    p = progress_of(parse_log(log))
+    assert p.total == 6 and p.done == 4 and p.running == 2
+    assert p.pct == 67
+    assert p.per_min == pytest.approx(1.0, abs=0.01)   # 3 gaps over 3 minutes
+    # ETA covers the 2 queued tasks only, not the unknowable rest of the run
+    assert p.eta_secs == pytest.approx(120, abs=1)
+
+
+def test_live_progress_says_seen_not_tasks(tmp_path):
+    # Nextflow announces tasks as channels emit, so mid-run the denominator
+    # grows: calling 26/28 "93% of tasks" implies a run is nearly done when it
+    # may be a third of the way. A live run must say "seen".
+    # every task COMPLETED, so liveness is decided purely by the log's mtime
+    lines = []
+    for i in range(6):
+        wd = tmp_path / "work" / "ab" / f"{i:06d}aaaa"
+        lines.append(
+            f"Jul-15 10:0{i}:00.000 [Task monitor] DEBUG - Task completed > "
+            f"TaskHandler[id: {i}; name: P:A (s{i}); status: COMPLETED; exit: 0; "
+            f"error: -; workDir: {wd}]")
+    log = tmp_path / ".nextflow.log"
+    log.write_text("\n".join(lines) + "\n")
+    os.utime(log, None)                      # fresh mtime -> live
+
+    # the sub_title ends with the log path, which here contains the test name —
+    # compare only the summary in front of it
+    def summary(app):
+        return app.sub_title.split("  —  ")[0]
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        assert app._run_is_live()
+        assert "seen" in summary(app), summary(app)
+        return True
+
+    assert drive(NfScope(log), steps)
+
+    old = time.time() - 7200                 # finished: the total is final
+    os.utime(log, (old, old))
+
+    async def steps_done(app, pilot):
+        await pilot.pause()
+        assert not app._run_is_live()
+        s = summary(app)
+        assert "tasks" in s and "seen" not in s, s
+        assert "100%" in s
+        return True
+
+    assert drive(NfScope(log), steps_done)
+
+
+def test_picker_rows_show_task_counts(tmp_path):
+    from nf_tui import _run_stats, gather_runs
+    make_run(tmp_path, n_tasks=25, n_procs=2, seed=3)
+    (tmp_path / ".nextflow.log").write_text(
+        (tmp_path / ".nextflow.log").read_text()
+        + "Jul-15 10:00:00.000 [main] DEBUG - Execution complete -- Goodbye\n")
+    runs = gather_runs(tmp_path)
+    assert runs and runs[0].progress is not None
+    stats = _run_stats(runs[0])
+    assert "tasks" in stats and "% done" in stats
 
 
 # ---- scale -----------------------------------------------------------------
