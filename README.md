@@ -125,7 +125,7 @@ Notes for clusters:
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
 | `s` | cycle sort — submission order → slowest → peak memory (heaviest process on top) |
 | `e` | jump to the next failed task and show why it failed |
-| `L` | open the selected file — or the whole run log — in `less` (lazy paging + search) |
+| `L` | open in `less` — the task's `.command.log`, the whole run log, or the selected file (lazy paging + search) |
 | `F` | load the whole selected file in-pane (uncapped; the browser's `L`) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |
 | `z` / `m` | full-screen (maximize) the focused pane (`z`/`m`/`esc` to restore) |

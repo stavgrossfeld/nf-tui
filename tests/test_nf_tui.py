@@ -898,6 +898,50 @@ def test_next_failed_wraps_and_reports_nothing_to_find(tmp_path):
     assert drive(NfScope(clean), steps)
 
 
+def test_L_pages_the_task_log_and_the_run_log(tmp_path):
+    # L used to work only on files and the run log; a task's own .command.log
+    # had no way out to the pager.
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("task output\n" * 50)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        cmds = []
+        app._page = lambda c: cmds.append(c)
+        for key in ("t", "L", "c", "L", "g", "L"):
+            await pilot.press(key)
+            await pilot.pause()
+        assert any(str(wd / ".command.log") in c for c in cmds), "task log not paged"
+        assert any(str(log) in c for c in cmds), "run log not paged"
+        # a finished task opens at the top; the run log opens at the end
+        task_cmd = next(c for c in cmds if ".command.log" in c)
+        assert "+G" not in task_cmd
+        assert "+G" in next(c for c in cmds if ".nextflow.log" in c)
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_first_task_is_selected_on_open(tmp_path):
+    # The cursor used to stay on the process group because move_cursor ran
+    # before the rebuilt tree had lines, so t/L/d acted on no task at all.
+    log = make_run(tmp_path, n_tasks=20, n_procs=2, with_workdirs=20)
+
+    async def steps(app, pilot):
+        for _ in range(3):
+            await pilot.pause()
+        node = app.query_one("#tasks", Tree).cursor_node
+        assert isinstance(node.data, Task), "cursor left on the process group"
+        assert app._selected() is not None
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):

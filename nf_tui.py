@@ -833,12 +833,23 @@ class NfScope(App):
         tree.clear()
         self.query_one("#files", OptionList).display = False
         self.action_refresh()
-        # Select the first task so its log shows on open (not a blank pane).
+        # Select the first task so t / L / d act on a task straight away.
+        # Deferred: right after the rebuild the new nodes have no line assigned
+        # yet, so move_cursor here would silently leave the cursor on the group.
+        self.call_after_refresh(self._select_first_task)
+        tree.focus()
+
+    def _select_first_task(self) -> None:
+        trees = self.query("#tasks")
+        if not trees:
+            return
+        tree = trees.first(Tree)
+        if isinstance(tree.cursor_node and tree.cursor_node.data, Task):
+            return                      # the user already moved somewhere
         for proc in tree.root.children:
             if proc.children:
                 tree.move_cursor(proc.children[0])
-                break
-        tree.focus()
+                return
 
     # ---- task list (grouped tree) ------------------------------------------
 
@@ -1381,37 +1392,57 @@ class NfScope(App):
             return
         self._open_file(p, full=True)
 
+    def _page(self, command: str) -> None:
+        """Hand the real terminal to the pager for the duration of the command."""
+        with self.suspend():
+            subprocess.run(["sh", "-c", command])
+
     def action_pager(self) -> None:
         # In the browser there is no terminal to hand to less; load in-pane.
         if self.web:
             if self.view == "files":
                 self.notify("browser mode: loading the full file in-pane (no less)")
                 self.action_full_file()
+            elif self.view in ("task", "container"):
+                # The whole .command.log is already in the pane here.
+                self.notify("browser mode: this log is fully loaded — scroll the pane")
             else:
-                self.notify("browser mode: scroll the pane (external less needs a terminal)")
+                self.notify("browser mode: scroll the pane, or press F in the "
+                            "files view (external less needs a terminal)")
+            return
+        pager = pager_bin()
+        if pager is None:
+            self.notify("no `less` on PATH")
             return
         # Run log: page the whole .nextflow.log on the host, opened at the end
         # (+G) to match the pane. No cap here — less pages it lazily.
         if self.view == "run":
             if self.log_file is None or not self.log_file.exists():
                 return
-            pager = pager_bin()
-            if pager is None:
-                self.notify("no `less` on PATH to page the run log")
+            self._page(f"{pager} -R +G {shlex.quote(str(self.log_file))}")
+            return
+        # Task / container view: page this task's own .command.log. It's the raw
+        # file, so the container noise the task view filters out is included —
+        # the pager hides nothing.
+        if self.view in ("task", "container"):
+            t = self._selected()
+            if t is None:
+                self.notify("select a task first")
                 return
-            with self.suspend():
-                subprocess.run(["sh", "-c",
-                                f"{pager} -R +G {shlex.quote(str(self.log_file))}"])
+            p = Path(t.workdir) / ".command.log" if t.workdir else None
+            if p is None or not p.exists():
+                self.notify("no .command.log for this task yet")
+                return
+            # Still running: open at the end to watch it. Finished: at the top,
+            # where the error or the story starts.
+            at_end = "" if (is_done(t) or is_failed(t)) else "+G "
+            self._page(f"{pager} -R {at_end}{shlex.quote(str(p))}")
             return
         if self.view != "files":
             self.notify("switch to the files view (d), or g for the run log")
             return
         t, p = self._current_file()
         if p is None or p.is_dir():
-            return
-        pager = pager_bin()
-        if pager is None:
-            self.notify("no `less` on PATH to page this file")
             return
         # Only BAM/CRAM/BCF need the container; check its image is present.
         tool = decode_tool(p)
@@ -1423,8 +1454,7 @@ class NfScope(App):
                 if chk.returncode != 0:
                     self.notify(f"image not present — {spec[0]} pull {spec[2]}")
                     return
-        with self.suspend():                # hand the real terminal to the pager
-            subprocess.run(["sh", "-c", self._pager_command(t, p, pager)])
+        self._page(self._pager_command(t, p, pager))
 
     def _viewer_done(self, lines: list[str], cap: int = VIEW_MAX_LINES,
                      path: Path | None = None) -> None:
