@@ -16,11 +16,20 @@ import time
 from pathlib import Path
 
 
+USAGE = ("usage: nf-tui-run <nextflow run args...>\n"
+         "  e.g.  nf-tui-run nf-core/sarek -profile test,docker --outdir results\n"
+         "        nf-tui-run main.nf --input samples.csv\n\n"
+         "Runs `nextflow run` in the background and opens nf-tui on the new\n"
+         "run's .nextflow.log. Quitting nf-tui leaves the pipeline running.")
+
+
 def main() -> None:
     args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
-        sys.exit("usage: nf-tui-run <nextflow run args...>\n"
-                 "  e.g.  nf-tui-run nf-core/sarek -profile test,docker")
+    if args and args[0] in ("-h", "--help"):
+        print(USAGE)              # asked for help: stdout, exit 0
+        return
+    if not args:
+        sys.exit(USAGE)           # missing arguments: stderr, exit 1
 
     cwd = Path.cwd()
     console = cwd / ".nf-tui-run.out"          # nextflow's console output

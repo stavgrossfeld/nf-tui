@@ -1,0 +1,53 @@
+name: Publish to PyPI
+
+# Publishes when you push a version tag (e.g. `git tag v1.0.0 && git push --tags`).
+# Uses PyPI Trusted Publishing (OIDC): no API token is stored anywhere — PyPI
+# verifies the workflow's identity directly. Configure it once at
+# https://pypi.org/manage/account/publishing/ with:
+#   owner: stavgrossfeld   repo: nf-tui   workflow: publish.yml   environment: pypi
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:        # allows a manual run from the Actions tab
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check the tag matches the packaged version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(ls dist/*.whl | sed -E 's/.*nf_tui-([^-]+)-.*/\1/')
+          echo "tag=$TAG packaged=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag $TAG does not match version $PKG in pyproject.toml"
+            exit 1
+          fi
+        if: startsWith(github.ref, 'refs/tags/v')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi          # add a required reviewer here to gate releases
+    permissions:
+      id-token: write          # the OIDC token Trusted Publishing needs
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

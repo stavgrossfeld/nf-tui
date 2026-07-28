@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:        # so the publish workflow can require a green CI
 
 jobs:
   test:
@@ -11,7 +12,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # 3.14 included because that's what development happens on — CI must
+        # cover the interpreter the author actually uses, not just older ones.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
@@ -23,3 +26,22 @@ jobs:
 
       - name: Check the package builds
         run: uv build
+
+  install:
+    # A build that imports is not the same as a package that installs and runs:
+    # this catches missing modules and broken entry points before a release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Build
+        run: uv build
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv /tmp/clean
+          uv pip install --python /tmp/clean/bin/python dist/*.whl
+      - name: Every entry point starts
+        run: |
+          /tmp/clean/bin/nf-tui --help
+          /tmp/clean/bin/nf-tui-web --help
+          /tmp/clean/bin/nf-tui-run --help

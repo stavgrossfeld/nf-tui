@@ -60,17 +60,17 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install git+https://github.com/stavgrossfeld/nf-tui
+uv tool install nf-tui
 ```
 
-or from a clone:
+or with pip:
 
 ```bash
-git clone https://github.com/stavgrossfeld/nf-tui
-uv tool install ./nf-tui
+pip install nf-tui
 ```
 
-This puts `nf-tui` and `nf-tui-web` on your PATH. (Plain `pip install .` works too.)
+This puts `nf-tui`, `nf-tui-web` and `nf-tui-run` on your PATH. To install the
+development version instead: `uv tool install git+https://github.com/stavgrossfeld/nf-tui`.
 
 ## Usage
 
@@ -97,8 +97,8 @@ login node against a run on shared storage (`/scratch`, `$WORK`, …):
 
 ```bash
 # one-time, in your home (no admin needed)
-uv tool install git+https://github.com/stavgrossfeld/nf-tui
-# or: pip install --user git+https://github.com/stavgrossfeld/nf-tui
+uv tool install nf-tui
+# or: pip install --user nf-tui
 
 nf-tui /scratch/$USER/my-run          # watch a run over SSH
 ```
