@@ -37,12 +37,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Input, OptionList, RichLog, Tree
+from textual.widgets import (DataTable, Footer, Header, Input, OptionList,
+                             RichLog, Tree)
 from textual.widgets.option_list import Option
 
 REFRESH_SECONDS = 1.0
@@ -2027,6 +2029,11 @@ def _ago(seconds: float) -> str:
     return f"{s // 86400}d ago"
 
 
+def _right(text: str) -> Text:
+    """Right-justified table cell — numbers only line up when they're aligned."""
+    return Text(text, justify="right")
+
+
 def _run_stats(r: "RunInfo") -> str:
     """'24 tasks · 100% done · 2 failed   ' for a picker row (empty if not
     counted). A run that never finished only ever announced part of its work,
@@ -2196,30 +2203,42 @@ class RunPickerScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield OptionList(id="runs")
+        # A real table: one row per run, aligned columns, sortable by eye.
+        yield DataTable(id="runs", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
         self.app.sub_title = (f"select a run under {self.base}"
                               "   —   ● running · ⚠ stalled · ✓ complete · ✗ failed")
-        ol = self.query_one("#runs", OptionList)
+        table = self.query_one("#runs", DataTable)
+        table.add_columns("", "STATE", "WHEN", "AGE",
+                          "TASKS", "DONE", "FAIL", "CACHED",
+                          "RUN", "PIPELINE", "WHERE")
         now = time.time()
         for i, r in enumerate(self.runs):
-            when = datetime.fromtimestamp(r.mtime).strftime("%Y-%m-%d %H:%M")
             mark, word = run_state(r, now)
-            age = _ago(now - r.mtime)
-            loc = str(r.path.parent).replace(str(Path.home()), "~")
-            ol.add_option(Option(
-                f"{mark} {word:<9} {when} ({age})   {r.runname}   {r.pipeline}"
-                f"\n     {_run_stats(r)}{loc}",
-                id=str(i),
-            ))
-        if self.runs:
-            ol.highlighted = 0        # so <enter> selects immediately
-        ol.focus()
+            p = r.progress
+            counted = p is not None and p.total
+            table.add_row(
+                mark,
+                word,
+                datetime.fromtimestamp(r.mtime).strftime("%Y-%m-%d %H:%M"),
+                _right(_ago(now - r.mtime)),
+                _right(f"{p.total:,}" if counted else "—"),
+                _right(f"{p.pct}%" if counted else "—"),
+                _right(str(p.failed) if counted and p.failed else ""),
+                _right(f"{p.cached:,}" if counted and p.cached else ""),
+                r.runname,
+                r.pipeline,
+                str(r.path.parent).replace(str(Path.home()), "~"),
+                key=str(i),
+            )
+        table.focus()
 
-    def on_option_list_option_selected(self, event) -> None:
-        self.dismiss(self.runs[int(event.option.id)].path)
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        key = event.row_key.value
+        if key is not None:
+            self.dismiss(self.runs[int(key)].path)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

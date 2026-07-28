@@ -19,7 +19,7 @@ import pytest
 from generate_run import make_run
 from nf_tui import (NfScope, RunPickerScreen, Task, is_failed,
                     parse_container_run, parse_log, read_back, split_name)
-from textual.widgets import OptionList, RichLog, Tree
+from textual.widgets import DataTable, OptionList, RichLog, Tree
 
 
 def drive(app: NfScope, steps):
@@ -346,7 +346,7 @@ def test_no_crash_with_picker_open(tmp_path):
         assert isinstance(app.screen, RunPickerScreen)
         app.action_refresh()                      # timer fires while picker up
         await pilot.pause()
-        app.screen.query_one("#runs", OptionList).highlighted = 0
+        app.screen.query_one("#runs", DataTable).move_cursor(row=0)
         await pilot.press("enter")                # pick a run
         await pilot.pause()
         await pilot.pause()
@@ -727,7 +727,7 @@ def test_picking_a_run_does_not_open_a_stale_file(tmp_path):
     async def steps(app, pilot):
         await pilot.pause()
         assert isinstance(app.screen, RunPickerScreen)
-        app.screen.query_one("#runs", OptionList).highlighted = 0
+        app.screen.query_one("#runs", DataTable).move_cursor(row=0)
         await pilot.press("enter")
         await pilot.pause(); await pilot.pause()
         tree = app.query_one("#tasks", Tree)
@@ -743,7 +743,7 @@ def test_picking_a_run_does_not_open_a_stale_file(tmp_path):
             await pilot.pause()
         opened = []
         app._open_file = lambda p, full=False: opened.append(p)
-        app.screen.query_one("#runs", OptionList).highlighted = 0
+        app.screen.query_one("#runs", DataTable).move_cursor(row=0)
         await pilot.press("enter")
         await pilot.pause(); await pilot.pause()
         assert opened == []                             # no stale file opened
