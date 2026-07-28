@@ -23,6 +23,15 @@ USAGE = ("usage: nf-tui-run <nextflow run args...>\n"
          "run's .nextflow.log. Quitting nf-tui leaves the pipeline running.")
 
 
+def _log_identity(log: Path) -> tuple[int, int] | None:
+    """(inode, creation-ish time) — changes when Nextflow rotates in a new log."""
+    try:
+        st = log.stat()
+    except OSError:
+        return None
+    return (st.st_ino, int(st.st_ctime))
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args and args[0] in ("-h", "--help"):
@@ -44,16 +53,26 @@ def main() -> None:
     except FileNotFoundError:
         sys.exit("nf-tui-run: `nextflow` not found on PATH")
 
-    # Wait (up to ~60s) for this run's .nextflow.log to appear.
+    # Wait (up to ~60s) for THIS run's .nextflow.log.
+    #
+    # The directory usually already holds the previous run's log, so "the file
+    # exists" proves nothing — waiting on that opened the last, already-finished
+    # run instead of the one just launched. Nextflow rotates the old log to
+    # .nextflow.log.1 and creates a fresh file, so the signal is a new inode
+    # (or, if there was no log at all, the file simply appearing).
     log = cwd / ".nextflow.log"
-    baseline = log.stat().st_mtime if log.exists() else 0.0
+    before = _log_identity(log)
     for _ in range(600):
-        if log.exists() and log.stat().st_mtime >= baseline:
+        now = _log_identity(log)
+        if now is not None and now != before:
             break
         if proc.poll() is not None:            # nextflow died before starting
             sys.exit(f"nf-tui-run: nextflow exited early (rc={proc.returncode}). "
                      f"See {console}")
         time.sleep(0.1)
+    else:
+        print("nf-tui-run: no new .nextflow.log after 60s — opening what's there.",
+              file=sys.stderr)
 
     print(f"nextflow running (PID {proc.pid}); opening nf-tui…")
     # Open the TUI directly on this run's log (a file -> no run picker).

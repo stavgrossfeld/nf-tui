@@ -52,6 +52,46 @@ def test_run_reports_a_missing_nextflow_clearly(tmp_path, monkeypatch):
     assert "nextflow" in str(e.value).lower()
 
 
+def test_run_waits_for_the_new_log_not_the_previous_one(tmp_path, monkeypatch):
+    """A directory usually already holds the last run's .nextflow.log.
+
+    Waiting merely for the file to "exist" matched that stale log instantly, so
+    nf-tui opened the previous, already-finished run instead of the one just
+    launched. Nextflow rotates the old log aside and creates a fresh file, so
+    the identity must change before we open anything.
+    """
+    import threading
+    import time
+
+    log = tmp_path / ".nextflow.log"
+    log.write_text("previous, finished run\n")
+    before = nf_tui_run._log_identity(log)
+    assert before is not None                      # the stale log is present
+
+    # nothing has rotated yet: the identity is unchanged, so we must NOT open
+    assert nf_tui_run._log_identity(log) == before
+
+    def rotate():                                  # what `nextflow run` does
+        time.sleep(0.3)
+        log.rename(tmp_path / ".nextflow.log.1")
+        log.write_text("the new run\n")
+
+    threading.Thread(target=rotate, daemon=True).start()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        now = nf_tui_run._log_identity(log)
+        if now is not None and now != before:
+            break
+        time.sleep(0.05)
+
+    assert nf_tui_run._log_identity(log) != before
+    assert log.read_text() == "the new run\n"      # the fresh one, not the stale
+
+
+def test_log_identity_handles_a_missing_file(tmp_path):
+    assert nf_tui_run._log_identity(tmp_path / "nope.log") is None
+
+
 # ---- nf-tui-web ------------------------------------------------------------
 
 def test_serve_refuses_a_directory_with_no_runs(tmp_path, monkeypatch):

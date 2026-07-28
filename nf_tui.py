@@ -810,14 +810,23 @@ def _proc_label(proc: str, tasks: list[Task]) -> Text:
     return label
 
 
-def _task_label(t: Task, m: "Metrics | None" = None) -> Text:
+def _task_label(t: Task, m: "Metrics | None" = None,
+                state: str | None = None) -> Text:
     """A tree row, coloured by state and laid out in fixed columns so
     durations and memory line up down the pane instead of drifting with the
-    length of each task's name."""
+    length of each task's name.
+
+    `state` overrides the log-derived one: Nextflow reports a task as SUBMITTED
+    until it finishes, so without it the tree would label a task the header is
+    counting as running "SUBMITTED".
+    """
     _, tag = split_name(t.name)
-    state = _label_state(t)
+    state = state or _label_state(t)
     style = STATE_STYLE[state]
-    mark = {"failed": "✗", "cached": "⟲", "done": "✓"}.get(state, "•")
+    mark = {"failed": "✗", "cached": "⟲", "done": "✓",
+            "running": "▶"}.get(state, "•")
+    # Show the state we actually determined, not the log's stale wording.
+    shown = "RUNNING" if state == "running" else t.status
 
     exit_str = "" if t.exit in ("-", "") else f"exit={t.exit}"
     if t.attempts > 1:
@@ -826,7 +835,7 @@ def _task_label(t: Task, m: "Metrics | None" = None) -> Text:
     label = Text()
     label.append(f"{mark} ", style=style)
     label.append(f"{(tag or t.hash)[:TAG_W]:<{TAG_W}} ")
-    label.append(f"{t.status[:STATUS_W]:<{STATUS_W}} ", style=style)
+    label.append(f"{shown[:STATUS_W]:<{STATUS_W}} ", style=style)
     label.append(f"{exit_str:<{EXIT_W}}",
                  style=STATE_STYLE["failed"] if exit_str.startswith("exit=")
                  and t.exit not in ("0",) else "dim")
@@ -882,6 +891,9 @@ class FileList(OptionList):
 
 class NfScope(App):
     TITLE = "nf-tui"
+    # The palette icon sits over the task tree and its tooltip covers the first
+    # rows; nf-tui has no palette commands of its own, so it only gets in the way.
+    ENABLE_COMMAND_PALETTE = False
     CSS = """
     #tasks { height: 1fr; border: round $panel; }
     #tasks:focus { border: round $accent; }
@@ -892,6 +904,9 @@ class NfScope(App):
     #log:focus { border: round $accent; }
     #search { display: none; height: 3; border: round $accent; }
     #search.on { display: block; }
+    /* The header's ⭘ icon docks 8 columns on the left and only opens a command
+       palette we don't use — hide it and give the space back to the summary. */
+    HeaderIcon { display: none; }
     """
     BINDINGS = [
         Binding("tab", "focus_next_pane", "Next pane", show=False),
@@ -912,7 +927,9 @@ class NfScope(App):
         Binding("x", "toggle_failed", "Failed only"),
         Binding("o", "open_workdir", "Work dir"),
         Binding("r", "refresh", "Refresh"),
-        Binding("q", "quit", "Quit"),
+        # Shift+Q, not q: quitting is one keystroke from many others and a
+        # stray lowercase q should not tear down a session you are watching.
+        Binding("Q", "quit", "Quit"),
     ]
 
     def __init__(self, target: Path):
@@ -932,6 +949,7 @@ class NfScope(App):
         self.follow = True
         self.view = "task"   # task | container | files | run | queue
         self._progress: Progress | None = None
+        self._live_states: dict[str, str] = {}   # in-flight hash -> running/pending
         self._work_root: Path | None = None      # this run's work/ tree
         self._workdir_cache: dict[str, str] = {}  # task hash -> resolved work dir
         self._sig: tuple | None = None   # skip tree work when nothing changed
@@ -1026,6 +1044,7 @@ class NfScope(App):
         self._trace_cache = {}
         self._work_root = None
         self._workdir_cache = {}
+        self._live_states = {}
         self._files = []
         self._files_task = None
         self._last_file = None
@@ -1091,6 +1110,10 @@ class NfScope(App):
         if check_fs:
             self._resolve_inflight_workdirs(inflight)
         prog = progress_of(self.tasks, check_fs=check_fs)
+        # Remember which in-flight tasks have actually started, so the tree can
+        # say RUNNING where the header counts one — same lookup, reused.
+        self._live_states = ({t.hash: task_state(t) for t in inflight}
+                             if check_fs else {})
         self._progress = prog
         nproc = len({split_name(t.name)[0] for t in self.tasks})
         # While a run is live the denominator keeps growing — Nextflow only
@@ -1123,7 +1146,8 @@ class NfScope(App):
         # A full rebuild (clear + re-add) is needed when the filter OR the sort
         # changes, because the in-place sync only appends/updates, never reorders.
         build_key = (self.failed_only, self.query_str, self.sort_mode)
-        sig = tuple((t.hash, t.status, t.exit) for t in self.tasks) + build_key
+        sig = (tuple((t.hash, t.status, t.exit) for t in self.tasks)
+               + tuple(sorted(self._live_states.items())) + build_key)
         if sig != self._sig:
             self._sig = sig
             if build_key != self._built_filter:
@@ -1220,7 +1244,8 @@ class NfScope(App):
             else:
                 pnode.set_label(_proc_label(proc, tasks))
             for t in tasks:
-                label = _task_label(t, self._metrics(t))
+                label = _task_label(t, self._metrics(t),
+                                    self._live_states.get(t.hash))
                 leaf = self._task_nodes.get(t.hash)
                 if leaf is None:
                     self._task_nodes[t.hash] = pnode.add_leaf(label, data=t)
@@ -2258,7 +2283,7 @@ class RunPickerScreen(Screen):
     session is one app (needed for the web/textual-serve mode)."""
 
     CSS = "#runs { height: 1fr; }"
-    BINDINGS = [Binding("q,escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("Q,escape", "cancel", "Cancel")]
 
     def __init__(self, base: Path, runs: list[RunInfo]):
         super().__init__()

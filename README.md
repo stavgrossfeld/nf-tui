@@ -87,7 +87,7 @@ nf-tui-run nf-core/sarek -profile test,docker --outdir results
 `nf-tui-run` passes its arguments to `nextflow run`, starts it in the
 background (console output goes to `.nf-tui-run.out`), and opens nf-tui on the
 new run's `.nextflow.log` — updating live as tasks complete. Quitting nf-tui
-(`q`) leaves the pipeline running; it prints the PID and how to follow or stop
+(`Q`) leaves the pipeline running; it prints the PID and how to follow or stop
 it. (Equivalent by hand: `nextflow run … & nf-tui .nextflow.log`.)
 
 ## On an HPC / remote server
@@ -146,7 +146,7 @@ Notes for clusters:
 | `x` | show failed tasks only |
 | `o` | open the task's work directory |
 | `esc` | step back (content → list → tree → run picker) |
-| `q` | quit |
+| `Q` | quit (Shift+Q, so a stray `q` can't drop a live session) |
 
 ## How it works
 
