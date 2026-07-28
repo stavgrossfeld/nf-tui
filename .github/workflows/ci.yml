@@ -16,10 +16,10 @@ jobs:
         # cover the interpreter the author actually uses, not just older ones.
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v6
 
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} --extra dev pytest -q
@@ -32,8 +32,8 @@ jobs:
     # this catches missing modules and broken entry points before a release.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
       - name: Build
         run: uv build
       - name: Install the wheel into a clean environment
