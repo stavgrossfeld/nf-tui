@@ -751,7 +751,41 @@ class Follower:
         return data
 
 
-def _proc_label(proc: str, tasks: list[Task]) -> str:
+# One colour per state, used for both the tree and the queue view so a glance
+# means the same thing everywhere.
+STATE_STYLE = {
+    "failed": "bold red",
+    "cached": "dim cyan",
+    "done": "green",
+    "running": "bold yellow",
+    "pending": "blue",
+}
+# Peak memory at or above this is worth noticing when hunting an OOM.
+BIG_MEM_KB = 4 * 1024 * 1024        # 4 GB
+
+TAG_W, STATUS_W, EXIT_W = 30, 10, 12   # tree column widths
+
+
+def _label_state(t: Task) -> str:
+    """The state a label should be coloured by (cheap: no filesystem)."""
+    if is_failed(t):
+        return "failed"
+    if t.cached:
+        return "cached"
+    if is_done(t):
+        return "done"
+    return "pending"
+
+
+def progress_bar(done: int, total: int, width: int = 12) -> str:
+    """'████████░░░░' — a bar that survives the plain-text header."""
+    if total <= 0:
+        return ""
+    filled = round(width * done / total)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _proc_label(proc: str, tasks: list[Task]) -> Text:
     """'FASTQC   3/3 ✓' — last path segment, done/total, status icon."""
     short = proc.split(":")[-1]
     total = len(tasks)
@@ -759,29 +793,50 @@ def _proc_label(proc: str, tasks: list[Task]) -> str:
     failed = sum(is_failed(t) for t in tasks)
     cached = sum(t.cached for t in tasks)
     if failed:
-        icon = f"✗ {failed} failed"
+        icon, style = f"✗ {failed} failed", STATE_STYLE["failed"]
     elif done == total:
-        icon = "⟲ cached" if cached == total else "✓"
+        if cached == total:
+            icon, style = "⟲ cached", STATE_STYLE["cached"]
+        else:
+            icon, style = "✓", STATE_STYLE["done"]
     else:
-        icon = "…"
+        icon, style = "…", STATE_STYLE["running"]
     if cached and cached != total:
         icon += f"  ({cached} cached)"
-    return f"{short}   {done}/{total} {icon}"
+    label = Text()
+    label.append(short, style="bold")
+    label.append(f"   {done}/{total} ", style="dim")
+    label.append(icon, style=style)
+    return label
 
 
-def _task_label(t: Task, m: "Metrics | None" = None) -> str:
+def _task_label(t: Task, m: "Metrics | None" = None) -> Text:
+    """A tree row, coloured by state and laid out in fixed columns so
+    durations and memory line up down the pane instead of drifting with the
+    length of each task's name."""
     _, tag = split_name(t.name)
-    mark = ("✗" if is_failed(t) else "⟲" if t.cached
-            else "✓" if is_done(t) else "•")
-    exit_str = "" if t.exit in ("-", "") else f" exit={t.exit}"
+    state = _label_state(t)
+    style = STATE_STYLE[state]
+    mark = {"failed": "✗", "cached": "⟲", "done": "✓"}.get(state, "•")
+
+    exit_str = "" if t.exit in ("-", "") else f"exit={t.exit}"
     if t.attempts > 1:
-        exit_str += f"  retry×{t.attempts - 1}"
-    extra = ""
+        exit_str += f" retry×{t.attempts - 1}"
+
+    label = Text()
+    label.append(f"{mark} ", style=style)
+    label.append(f"{(tag or t.hash)[:TAG_W]:<{TAG_W}} ")
+    label.append(f"{t.status[:STATUS_W]:<{STATUS_W}} ", style=style)
+    label.append(f"{exit_str:<{EXIT_W}}",
+                 style=STATE_STYLE["failed"] if exit_str.startswith("exit=")
+                 and t.exit not in ("0",) else "dim")
     if m is not None and m.has_data():
-        extra = f"   {human_duration(m.realtime_ms)}"
+        label.append(f"{human_duration(m.realtime_ms):>8}", style="dim")
         if m.peak_rss_kb:
-            extra += f" · {human_size(m.peak_rss_kb * 1024)}"
-    return f"{mark} {tag or t.hash}   {t.status}{exit_str}{extra}"
+            big = m.peak_rss_kb >= BIG_MEM_KB
+            label.append(f"{human_size(m.peak_rss_kb * 1024):>11}",
+                         style="bold magenta" if big else "dim")
+    return label
 
 
 class LogView(RichLog):
@@ -1042,7 +1097,8 @@ class NfScope(App):
         # announces tasks as channels emit them — so call it what it is
         # ("seen") rather than implying the run is 93% done when it isn't.
         noun = "seen" if live else "tasks"
-        summary = (f"{prog.done:,}/{prog.total:,} {noun} ({prog.pct}%) "
+        bar = progress_bar(prog.done, prog.total)
+        summary = (f"{bar} {prog.pct}%  {prog.done:,}/{prog.total:,} {noun} "
                    f"· {nproc} processes")
         if prog.cached:
             summary += f" · {prog.cached:,} cached"
@@ -1290,7 +1346,7 @@ class NfScope(App):
         first), then pending, like `squeue` for the pipeline."""
         log.auto_scroll = False
         log.clear()
-        rows: list[tuple[int, float, str]] = []
+        rows: list[tuple[int, float, Text]] = []
         now = time.time()
         counts = {"running": 0, "pending": 0}
         for t in self.tasks:
@@ -1303,12 +1359,15 @@ class NfScope(App):
             began = task_started_at(t) if state == "running" else None
             elapsed = (now - began) if began else 0.0
             proc, tag = split_name(t.name)
-            rows.append((
-                0 if state == "running" else 1,
-                -elapsed,
-                f"{state:<8} {human_duration(elapsed * 1000) if began else '—':>8}  "
-                f"{(tag or t.hash)[:28]:<28} {proc.split(':')[-1][:30]:<30} {t.hash}",
-            ))
+            row = Text()
+            row.append(f"{state:<8} ", style=STATE_STYLE[state])
+            row.append(
+                f"{human_duration(elapsed * 1000) if began else '—':>8}  ",
+                style="dim")
+            row.append(f"{(tag or t.hash)[:28]:<28} ")
+            row.append(f"{proc.split(':')[-1][:30]:<30} ", style="bold")
+            row.append(t.hash, style="dim")
+            rows.append((0 if state == "running" else 1, -elapsed, row))
         p = self._progress
         head = [f"──────── queue: {counts['running']:,} running · "
                 f"{counts['pending']:,} pending"
@@ -1321,10 +1380,13 @@ class NfScope(App):
             head.append("Nextflow only announces tasks as it submits them, so a "
                         "running pipeline may still have work it hasn't queued.")
         rows.sort(key=lambda r: (r[0], r[1]))
-        body = [r[2] for r in rows[:QUEUE_MAX_ROWS]]
+        body: list[Text] = [r[2] for r in rows[:QUEUE_MAX_ROWS]]
         if len(rows) > QUEUE_MAX_ROWS:
-            body.append(f"… and {len(rows) - QUEUE_MAX_ROWS:,} more in flight")
-        log.write("\n".join(head + body))
+            body.append(Text(f"… and {len(rows) - QUEUE_MAX_ROWS:,} more in flight"))
+        # One styled block: per-line writes are far slower, and Text.join keeps
+        # each row's colours.
+        out = Text("\n").join([Text(h, style="bold") for h in head] + body)
+        log.write(out)
 
     def _runlog_header(self) -> str:
         """Header line: says where in the file the loaded window starts, so the
@@ -1775,7 +1837,9 @@ class NfScope(App):
             if node is not None and isinstance(node.data, str):
                 members = self._groups.get(node.data, [])
                 lines = [f"{node.data}   ({len(members)} tasks)"]
-                lines += [f"  {_task_label(x)}   [{x.hash}]" for x in members[:40]]
+                # .plain: this pane takes strings, not styled tree labels
+                lines += [f"  {_task_label(x).plain}   [{x.hash}]"
+                          for x in members[:40]]
                 if len(members) > 40:
                     lines.append(f"  … and {len(members) - 40} more "
                                  f"(expand the group to see them)")

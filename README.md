@@ -10,9 +10,10 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 
 ## Features
 
-- **Live task tree** grouped by process, with per-process progress and
-  status (`✓` / `✗` / `⟲` cached / running), updated on a timer while a
-  pipeline runs.
+- **Live task tree** grouped by process, coloured by state (`✓` green /
+  `✗` red / `⟲` cached / running) and laid out in fixed columns so durations
+  and peak memory line up down the pane. Peak memory over 4 GB is highlighted,
+  which is usually what you're looking for when hunting an OOM.
 - **Works with `-resume`** — cached tasks are shown (`⟲`) with their work dirs
   resolved, so a resumed run's logs, outputs and metrics stay browsable. Retries
   (`errorStrategy 'retry'`) and `storeDir` tasks are shown too, and every
