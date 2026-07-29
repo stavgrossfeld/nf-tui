@@ -1219,3 +1219,46 @@ def test_app_10k_loads_and_navigates(tmp_path):
     ok = drive(NfScope(log), steps)
     assert ok
     assert time.time() - t0 < 5.0           # whole load+nav budget
+
+
+def test_new_status_counts_as_in_flight(tmp_path):
+    """Nextflow reports NEW for a task it created but hasn't submitted.
+
+    Counting only RUNNING/SUBMITTED made those invisible: a live run with three
+    queued tasks showed "0 running · 0 pending" in the queue view while the tree
+    listed them plainly.
+    """
+    from nf_tui import progress_of
+    wd = tmp_path / "work" / "4c" / "253513c79189"
+    wd.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"~> TaskHandler[id: 17; name: P:A (17); status: NEW; exit: -; "
+        f"error: -; workDir: {wd}]\n")
+    tasks = parse_log(log)
+    assert tasks[0].status == "NEW"
+    p = progress_of(tasks, check_fs=True)
+    assert p.in_flight == 1 and p.pending == 1 and p.done == 0
+
+
+def test_queue_view_lists_new_tasks(tmp_path):
+    wd = tmp_path / "work" / "4c" / "253513c79189"
+    wd.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"~> TaskHandler[id: 17; name: P:A (17); status: NEW; exit: -; "
+        f"error: -; workDir: {wd}]\n")
+
+    def text(pane):
+        return "\n".join("".join(s.text for s in strip) for strip in pane.lines)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        await pilot.press("p")
+        await pilot.pause()
+        shown = text(app.query_one("#log", RichLog))
+        assert "1 pending" in shown, shown
+        assert "nothing in flight" not in shown
+        return True
+
+    assert drive(NfScope(log), steps)

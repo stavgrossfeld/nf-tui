@@ -196,6 +196,11 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
 
+# A task Nextflow has created but not finished. NEW is easy to miss and real:
+# it means created-but-not-yet-submitted, and a live log carries plenty of them
+# (a demo recording showed three queued tasks counted as nothing at all).
+IN_FLIGHT = ("NEW", "SUBMITTED", "RUNNING")
+
 QUEUE_MAX_ROWS = 300      # rows rendered in the queue view
 QUEUE_FS_LIMIT = 2_000    # above this many in-flight tasks, skip the fs check
 
@@ -275,7 +280,7 @@ def progress_of(tasks: list[Task], window: float = 300.0,
             p.failed += 1
         if t.cached:
             p.cached += 1
-        if t.status.upper() in ("RUNNING", "SUBMITTED"):
+        if t.status.upper() in IN_FLIGHT:
             if check_fs and task_state(t) == "running":
                 p.running += 1
             else:
@@ -1112,7 +1117,7 @@ class NfScope(App):
         # Splitting pending from running costs a lookup per in-flight task, so
         # only do it for a live run, and not when the queue is enormous.
         inflight = [t for t in self.tasks
-                    if t.status.upper() in ("RUNNING", "SUBMITTED")]
+                    if t.status.upper() in IN_FLIGHT]
         check_fs = live and len(inflight) <= QUEUE_FS_LIMIT
         if check_fs:
             self._resolve_inflight_workdirs(inflight)
@@ -1354,7 +1359,7 @@ class NfScope(App):
     def _run_is_live(self) -> bool:
         """A run is live if a task is still running/submitted, or its log was
         written in the last ~20s (Nextflow keeps appending while it runs)."""
-        if any(t.status.upper() in ("RUNNING", "SUBMITTED") for t in self.tasks):
+        if any(t.status.upper() in IN_FLIGHT for t in self.tasks):
             return True
         try:
             return (time.time() - self.log_file.stat().st_mtime) < 20
@@ -1392,7 +1397,7 @@ class NfScope(App):
         now = time.time()
         counts = {"running": 0, "pending": 0}
         for t in self.tasks:
-            if t.status.upper() not in ("RUNNING", "SUBMITTED"):
+            if t.status.upper() not in IN_FLIGHT:
                 continue
             state = task_state(t)
             if state not in counts:
