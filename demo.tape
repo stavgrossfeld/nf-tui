@@ -1,11 +1,21 @@
 # nf-tui demo — nf-core/sarek launched and watched from the very beginning.
 #
-# Real time, nothing trimmed: the pipeline is started from the prompt and the
-# recording watches it boot, submit its first tasks, and fill in. Nextflow takes
-# about half a minute to start up, and that is shown rather than cut — the run
-# log streams the whole time, so you can see what it is doing.
+# The pipeline is started from the prompt and the recording watches it submit
+# its first tasks and fill in, at the speed it really happens. The one exception
+# is Nextflow's own startup — about half a minute before it submits anything —
+# which is run fast rather than cut, so you still see the run log streaming
+# config and plugin loading without waiting through it.
 #
-# Render with:  vhs demo.tape && ZOOM=0 REAL_SECS=82 OUT_W=1300 ./make_demo.sh
+# Render with:
+#   vhs demo.tape
+#   ZOOM=0 REAL_SECS=84 OUT_W=1300 FF_UNTIL=45 FF_RATE=15 ./make_demo.sh
+#
+# FF_UNTIL covers Nextflow's boot so the clip reaches the first task in ~4s.
+# It is expressed in the corrected timeline, which is longer than the boot's
+# wall clock (~33s here): vhs drops more frames while the screen is static, so
+# the boot occupies a larger share of the stretched clip than of real time.
+# If a re-recording boots slower, raise it — check when tasks appear with:
+#   ffmpeg -ss 4 -i demo.gif -frames:v 1 /tmp/f.png
 # Expects docker running and the nf-core/sarek test data reachable.
 
 Output demo_raw.gif
