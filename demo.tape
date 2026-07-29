@@ -1,11 +1,12 @@
-# nf-tui demo — browsing an nf-core/sarek run's output files.
+# nf-tui demo — nf-core/sarek launched and watched from the very beginning.
 #
-# Recorded against a real nf-core/sarek run. No camera moves; make_demo.sh only
-# corrects the timing, because vhs drops frames when it can't render as fast as
-# it captures and the raw capture otherwise plays too fast.
+# Real time, nothing trimmed: the pipeline is started from the prompt and the
+# recording watches it boot, submit its first tasks, and fill in. Nextflow takes
+# about half a minute to start up, and that is shown rather than cut — the run
+# log streams the whole time, so you can see what it is doing.
 #
-# Render with:  vhs demo.tape && ZOOM=0 ./make_demo.sh
-# Expects the completed sarek run at ~/scratch/.nextflow.log.
+# Render with:  vhs demo.tape && ZOOM=0 REAL_SECS=82 OUT_W=1300 ./make_demo.sh
+# Expects docker running and the nf-core/sarek test data reachable.
 
 Output demo_raw.gif
 Set FontSize 16
@@ -16,60 +17,36 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
 
 Hide
-Type "export PATH=$HOME/.local/bin:$PATH; cd ~/scratch; clear"
+Type "export PATH=$HOME/.local/bin:$PATH; rm -rf ~/scratch/demo_sarek; mkdir -p ~/scratch/demo_sarek; cd ~/scratch/demo_sarek; clear"
 Enter
-Sleep 1s
+Sleep 2s
 Show
 
-# ── Open the run: task tree with duration and peak memory, run log below ───
-Type "nf-tui .nextflow.log"
-Sleep 600ms
+# ── Prefix any nextflow command to launch it and watch it ──────────────────
+Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out"
+Sleep 800ms
 Enter
-Sleep 5s
 
-# ── Filter to one task. Its hash is unique; a process name would not be —
-#    "MOSDEPTH" also matches SAMTOOLS_STATS, whose subworkflow path contains it.
-Type "/"
-Sleep 600ms
-Type "1f/8e46a2"
-Sleep 2.5s
-Enter
-Sleep 1.2s
+# Nextflow boots: the tree is empty and the run log streams its startup.
+Sleep 30s
 
-# Step onto the task itself.
-Down
-Sleep 1.5s
+# ── The first tasks appear and start completing, live ──────────────────────
+Sleep 26s
 
-# ── Its work directory: every output, with sizes and symlinks marked ───────
-Type "d"
+# ── What's actually running right now ──────────────────────────────────────
+Type "p"
+Sleep 8s
+
+Escape
 Sleep 4s
 
-# A 44 MB CRAM — decoded by samtools from this task's own container, so the
-# reference resolves exactly as it did for the task.
-Down 2
+# ── The outputs of a task that has finished ────────────────────────────────
+Type "d"
+Sleep 7s
+Down
 Sleep 1s
 Enter
-Sleep 7s
-
-# A plain text summary, read straight off the host.
-Down 4
-Sleep 800ms
-Enter
 Sleep 4s
-
-# And a gzip, decompressed on the fly.
-Down
-Sleep 800ms
-Enter
-Sleep 4s
-
-# ── Page it in less — lazy, so even a huge file opens at once ──────────────
-Type "L"
-Sleep 3.5s
-Space
-Sleep 1.5s
-Type "q"
-Sleep 2s
 
 Type "Q"
-Sleep 1.5s
+Sleep 2s
