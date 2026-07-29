@@ -18,7 +18,9 @@ OUT=${2:-demo.gif}
 REAL_SECS=${REAL_SECS:-44}        # wall time the tape actually takes
 OUT_W=${OUT_W:-1100}
 FPS=10
-COLORS=${COLORS:-48}   # fewer colours: a terminal needs very few, and it halves the file
+COLORS=${COLORS:-48}    # a terminal needs few colours; fewer halves the file
+FF_UNTIL=${FF_UNTIL:-0}   # run the first N seconds fast (0 = off)
+FF_RATE=${FF_RATE:-6}     # how much faster that opening stretch runs
 
 [ -f "$RAW" ] || { echo "no $RAW — run: vhs demo.tape" >&2; exit 1; }
 
@@ -72,11 +74,20 @@ PAL=$(mktemp -t nftui_pal).png
 # Terminal output is left-aligned, so a centred zoom crops the labels off the
 # left ("queue:" became "e:"). Hold the camera near the left edge instead.
 X="iw*0.02"
-FILTER="setpts=${stretch}*PTS,fps=${FPS},${CAM}"
+# Nextflow spends its first half-minute booting before it submits anything.
+# That is real and worth showing, but nobody wants to watch it at 1x — so the
+# opening can be run fast while everything after it stays at true speed.
+if [ "${FF_UNTIL}" != "0" ]; then
+  echo "  first ${FF_UNTIL}s at ${FF_RATE}x, the rest in real time"
+  CHAIN="[0:v]setpts=${stretch}*PTS,fps=${FPS},split=2[p][q];[p]trim=0:${FF_UNTIL},setpts=(PTS-STARTPTS)/${FF_RATE}[a];[q]trim=start=${FF_UNTIL},setpts=PTS-STARTPTS[b];[a][b]concat=n=2:v=1,${CAM}"
+else
+  CHAIN="[0:v]setpts=${stretch}*PTS,fps=${FPS},${CAM}"
+fi
 
-ffmpeg -v error -y -i "$RAW" -vf "${FILTER},palettegen=max_colors=${COLORS}:stats_mode=diff" "$PAL"
+ffmpeg -v error -y -i "$RAW" \
+       -filter_complex "${CHAIN},palettegen=max_colors=${COLORS}:stats_mode=diff" "$PAL"
 ffmpeg -v error -y -i "$RAW" -i "$PAL" \
-       -lavfi "${FILTER}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5" "$OUT"
+       -filter_complex "${CHAIN}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5" "$OUT"
 rm -f "$PAL"
 
 python3 - "$OUT" <<'PY'
