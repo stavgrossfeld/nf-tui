@@ -1443,3 +1443,43 @@ def test_singularity_pager_and_viewer_commands(tmp_path):
     assert "singularity" in cmd and " exec " in cmd
     assert "--rm" not in cmd                       # that is a docker flag
     assert "samtools view -h" in cmd and "| less" in cmd
+
+
+def test_cursor_lands_on_a_task_that_appears_after_opening(tmp_path):
+    """A run opened the moment it launches has an empty tree for a while.
+
+    Selecting the first task only once, at open, left the cursor parked on a
+    process group for the rest of the session — so `d` showed an empty file
+    list and `t` a process summary, which is what a live-run recording caught.
+    """
+    log = tmp_path / ".nextflow.log"
+    log.write_text("")                                   # nothing submitted yet
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("output\n")
+    (wd / "result.txt").write_text("hello\n")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        tree = app.query_one("#tasks", Tree)
+        assert not isinstance(getattr(tree.cursor_node, "data", None), Task)
+
+        # Nextflow submits its first task a moment later.
+        log.write_text(
+            f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+            f"exit: 0; error: -; workDir: {wd}]\n")
+        app._force_refresh = True
+        app.action_refresh()
+        for _ in range(3):
+            await pilot.pause()
+
+        assert isinstance(tree.cursor_node.data, Task), "cursor never moved"
+
+        await pilot.press("d")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [p.name for p in app._files] == ["result.txt"]
+        return True
+
+    assert drive(NfScope(log), steps)

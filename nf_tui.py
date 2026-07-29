@@ -1002,6 +1002,8 @@ class NfScope(App):
         self.view = "task"   # task | container | files | run | queue
         self._progress: Progress | None = None
         self._placeholder = None                 # the '(no tasks yet)' leaf
+        self._auto_selected = False              # have we put the cursor on a task yet
+        self._select_tries = 0                   # bounded retries while the tree lays out
         self._live_states: dict[str, str] = {}   # in-flight hash -> running/pending
         self._work_root: Path | None = None      # this run's work/ tree
         self._workdir_cache: dict[str, str] = {}  # task hash -> resolved work dir
@@ -1099,6 +1101,8 @@ class NfScope(App):
         self._workdir_cache = {}
         self._live_states = {}
         self._placeholder = None
+        self._auto_selected = False
+        self._select_tries = 0
         self._files = []
         self._files_task = None
         self._last_file = None
@@ -1115,15 +1119,35 @@ class NfScope(App):
         tree.focus()
 
     def _select_first_task(self) -> None:
+        """Put the cursor on a task, so t / d / L act on one straight away.
+
+        Retried until a task exists rather than attempted once: a run opened the
+        moment it launches has an empty tree for the first half-minute, and
+        giving up then left the cursor parked on a process group — so `d` showed
+        an empty file list and `t` a process summary, for the rest of the run.
+        """
+        if self._auto_selected:
+            return
         trees = self.query("#tasks")
         if not trees:
             return
         tree = trees.first(Tree)
-        if isinstance(tree.cursor_node and tree.cursor_node.data, Task):
-            return                      # the user already moved somewhere
+        node = tree.cursor_node
+        if node is not None and isinstance(node.data, Task):
+            self._auto_selected = True      # already on one (user, or earlier us)
+            return
         for proc in tree.root.children:
             if proc.children:
                 tree.move_cursor(proc.children[0])
+                # A node added in this same pass has no line yet, so move_cursor
+                # quietly does nothing. Confirm it took, and if not try again
+                # once the tree has been laid out.
+                landed = tree.cursor_node
+                if landed is not None and isinstance(landed.data, Task):
+                    self._auto_selected = True
+                elif self._select_tries < 20:
+                    self._select_tries += 1
+                    self.call_after_refresh(self._select_first_task)
                 return
 
     # ---- task list (grouped tree) ------------------------------------------
@@ -1221,6 +1245,10 @@ class NfScope(App):
                 self._full_rebuild()   # filter/sort changed: repopulate from scratch
             else:
                 self._sync_tree()      # in place: never disturbs cursor/focus/scroll
+        # A run opened at launch has no tasks for its first half-minute; keep
+        # trying until there is one to land on.
+        if not self._auto_selected:
+            self._select_first_task()
         self._render_current()
 
     def _visible_tasks(self) -> list[Task]:

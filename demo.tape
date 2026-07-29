@@ -41,12 +41,16 @@ Escape
 Sleep 4s
 
 # ── The outputs of a task that has finished ────────────────────────────────
+# Step onto a completed task first: pressing d on a process group shows an
+# empty file list, since a group has no work dir of its own.
+Down 2
+Sleep 1.5s
 Type "d"
-Sleep 7s
+Sleep 5s
 Down
 Sleep 1s
 Enter
-Sleep 4s
+Sleep 5s
 
 Type "Q"
 Sleep 2s
