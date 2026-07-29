@@ -701,8 +701,8 @@ def find_tool_image(launch_dir: Path, binary: str) -> str | None:
     work = launch_dir / "work"
     if not work.is_dir():
         return None
-    alt = "htslib" if binary == "samtools" else binary
-    seen: set[str] = set()
+    # Collect the images this run used, keeping the engine each came with.
+    candidates: dict[str, str] = {}          # image -> engine
     try:
         groups = sorted(work.iterdir())
     except OSError:
@@ -712,22 +712,41 @@ def find_tool_image(launch_dir: Path, binary: str) -> str | None:
             continue
         for cr in g.glob("*/.command.run"):
             spec = parse_container_run(str(cr.parent))
-            if not spec:
-                continue
-            engine, _, img = spec
-            if img in seen:
-                continue
-            seen.add(img)
-            low = img.lower()
-            if binary in low or alt in low:
-                try:
-                    ok = subprocess.run([engine, "image", "inspect", img],
-                                        capture_output=True, timeout=15).returncode == 0
-                except Exception:                     # noqa: BLE001
-                    ok = False
-                if ok:
-                    return img
+            if spec:
+                candidates.setdefault(spec[2], spec[0])
+
+    # Try images whose name mentions the tool first, then the rest. The name is
+    # only a hint: an "htslib" image sounds like it has samtools and does not
+    # (htslib ships tabix and bgzip), which silently produced
+    # "sh: 1: samtools: not found" instead of a decoded CRAM.
+    ranked = sorted(candidates, key=lambda i: binary not in i.lower())
+    for img in ranked:
+        engine = candidates[img]
+        if not _image_has(engine, img, binary):
+            continue
+        return img
     return None
+
+
+def _image_has(engine: str, image: str, binary: str) -> bool:
+    """Is `binary` actually runnable inside this image? Checked rather than
+    guessed from the image name, and only for images already pulled — nothing
+    here should start a download."""
+    try:
+        if engine in ("docker", "podman"):
+            present = subprocess.run([engine, "image", "inspect", image],
+                                     capture_output=True, timeout=15)
+            if present.returncode != 0:
+                return False
+            probe = [engine, "run", "--rm", "--entrypoint", "sh", image,
+                     "-c", f"command -v {shlex.quote(binary)}"]
+        else:                                  # singularity / apptainer
+            probe = [engine, "exec", image, "sh", "-c",
+                     f"command -v {shlex.quote(binary)}"]
+        return subprocess.run(probe, capture_output=True,
+                              timeout=60).returncode == 0
+    except Exception:                          # noqa: BLE001
+        return False
 
 
 class Follower:
@@ -1646,7 +1665,12 @@ class NfScope(App):
             log.write(f"(binary file, {sz} — no text viewer; press {hint})")
             return
         if tool:
-            header.append(f"$ {tool} {p.name}   (in {self._container_desc(t)})")
+            # Name the image that will actually run the tool, which is often not
+            # the task's own — a mosdepth container has no samtools in it.
+            spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
+            where = (f"{spec[0]}:{spec[2].split('/')[-1]}" if spec
+                     else self._container_desc(t))
+            header.append(f"$ {tool} {p.name}   (in {where})")
         elif gz:
             header.append(f"$ gunzip -c {p.name}   (host)")
         else:

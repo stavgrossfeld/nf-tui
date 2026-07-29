@@ -1262,3 +1262,47 @@ def test_queue_view_lists_new_tasks(tmp_path):
         return True
 
     assert drive(NfScope(log), steps)
+
+
+def test_tool_image_is_verified_not_guessed_from_its_name(tmp_path, monkeypatch):
+    """An image whose name mentions the tool need not contain it.
+
+    A real sarek run picked `htslib:1.21` for samtools — htslib ships tabix and
+    bgzip, not samtools — so the CRAM viewer ran a doomed command and showed
+    "sh: 1: samtools: not found". Candidates are probed now, not guessed.
+    """
+    import nf_tui as m
+
+    def workdir(group: str, image: str) -> None:
+        wd = tmp_path / "work" / group / (group * 15)
+        wd.mkdir(parents=True)
+        (wd / ".command.run").write_text(
+            f'    docker run -i -v /d:/d -w "$NXF_TASK_WORKDIR" {image} '
+            f'/bin/bash -c "eval ..."\n')
+
+    workdir("aa", "example.org/htslib:1.21")        # sounds right, hasn't got it
+    workdir("bb", "example.org/tools:9")            # no hint in the name, has it
+
+    probed = []
+
+    def fake_probe(engine, image, binary):
+        probed.append(image)
+        return image.endswith("tools:9")            # only this one really has it
+
+    monkeypatch.setattr(m, "_image_has", fake_probe)
+    found = m.find_tool_image(tmp_path, "samtools")
+
+    assert found == "example.org/tools:9"
+    # the name-matching candidate is tried first, then rejected by the probe
+    assert probed[0] == "example.org/htslib:1.21"
+
+
+def test_find_tool_image_returns_none_when_nothing_provides_it(tmp_path, monkeypatch):
+    import nf_tui as m
+    wd = tmp_path / "work" / "aa" / ("a" * 15)
+    wd.mkdir(parents=True)
+    (wd / ".command.run").write_text(
+        '    docker run -i -w "$NXF_TASK_WORKDIR" example.org/nothing:1 '
+        '/bin/bash -c "eval ..."\n')
+    monkeypatch.setattr(m, "_image_has", lambda *a: False)
+    assert m.find_tool_image(tmp_path, "samtools") is None

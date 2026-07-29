@@ -16,7 +16,7 @@ set -euo pipefail
 RAW=${1:-demo_raw.gif}
 OUT=${2:-demo.gif}
 REAL_SECS=${REAL_SECS:-44}        # wall time the tape actually takes
-OUT_W=1100
+OUT_W=${OUT_W:-1100}
 FPS=10
 COLORS=${COLORS:-48}   # fewer colours: a terminal needs very few, and it halves the file
 
@@ -37,11 +37,17 @@ PY
 stretch=$(python3 -c "print(f'{$REAL_SECS/$raw_secs:.4f}')")
 echo "  raw ${raw_secs}s -> ${REAL_SECS}s (x${stretch}), camera moves, ${OUT_W}px"
 
+# Camera moves are optional (ZOOM=0 turns them off). Quick one-second pushes
+# then hold still: continuous drift looks nicer but makes every frame differ,
+# which is exactly what a GIF cannot compress.
+if [ "${ZOOM:-1}" = "0" ]; then
+  CAM="scale=${OUT_W}:-1:flags=lanczos"
+else
 # Camera: quick one-second pushes, then hold perfectly still. Continuous
 # drifting looks nicer but every frame then differs from the last, which is
 # exactly what a GIF cannot compress — snapping and holding keeps the motion
 # and cuts the file by more than half. Times are seconds in the corrected clip.
-Z="if(lt(it,7),1,\
+  Z="if(lt(it,7),1,\
 if(lt(it,8),1+0.22*(it-7),\
 if(lt(it,15),1.22,\
 if(lt(it,16),1.22-0.22*(it-15),\
@@ -57,13 +63,16 @@ if(lt(it,41),1.30-0.30*(it-40),1))))))))))))"
 # Look at the lower pane while the queue and the failure report are on screen.
 # Harmless outside a zoom: at z=1 the crop is the whole frame and the offset
 # clamps away, so there is no jump when the push starts.
-Y="ih/2-(ih/zoom/2)+if(between(it,18,42),ih*0.13,0)"
+  Y="ih/2-(ih/zoom/2)+if(between(it,18,42),ih*0.13,0)"
+
+  CAM="zoompan=z='${Z}':x='${X}':y='${Y}':d=1:s=${OUT_W}x586:fps=${FPS}"
+fi
 
 PAL=$(mktemp -t nftui_pal).png
 # Terminal output is left-aligned, so a centred zoom crops the labels off the
 # left ("queue:" became "e:"). Hold the camera near the left edge instead.
 X="iw*0.02"
-FILTER="setpts=${stretch}*PTS,fps=${FPS},zoompan=z='${Z}':x='${X}':y='${Y}':d=1:s=${OUT_W}x586:fps=${FPS}"
+FILTER="setpts=${stretch}*PTS,fps=${FPS},${CAM}"
 
 ffmpeg -v error -y -i "$RAW" -vf "${FILTER},palettegen=max_colors=${COLORS}:stats_mode=diff" "$PAL"
 ffmpeg -v error -y -i "$RAW" -i "$PAL" \
