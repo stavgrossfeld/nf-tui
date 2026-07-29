@@ -52,6 +52,10 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 - **Find any task** — `/` filters the tree by process name or hash as you
   type; `x` filters to failed tasks; `z`/`m` full-screens any pane; `o` opens
   a task's work dir.
+- **JSON for agents and scripts** — `nf-tui --json` prints the whole run as
+  data: progress, every task with its state and resource metrics, why each
+  failure happened, and the `.command.*` files nested per task. Debugging a
+  failed run needs neither a terminal nor a walk through the work tree.
 - **Web mode** — the same UI in a browser via `nf-tui-web`, streamed with
   [textual-serve](https://github.com/Textualize/textual-serve). `F` loads a
   whole file in-pane there, since the browser has no terminal for `less`.
@@ -98,6 +102,26 @@ Press `K` in nf-tui to stop a pipeline it launched (it asks first). That sends
 `SIGTERM`, which is the signal Nextflow handles: its handler kills the running
 tasks, and on a scheduler cancels the jobs it queued. `SIGINT` is ignored, and
 `kill -9` skips the handler and strands submitted jobs.
+
+## JSON output
+
+```bash
+nf-tui --json /path/to/run              # the whole run, as data
+nf-tui --json --failed /path/to/run     # only what broke
+nf-tui --json --logs all /path/to/run   # every task's .command.* files
+nf-tui --json --watch 5 /path/to/run    # one object per line while it runs
+```
+
+Each task carries its `hash`, `process`, `tag`, `status`, `state`
+(running / pending / done / failed / cached), `exit`, `workdir`, resource
+`metrics`, the failure `error` (cause plus Nextflow's full report), and its
+`logs` — `.command.sh`, `.command.out`, `.command.err`, `.command.log`. By
+default only failed tasks carry logs, which is the debugging case and cheap;
+`--logs all` includes them everywhere.
+
+`progress.total_is_final` says whether the run is still growing: mid-run
+Nextflow has only announced the tasks it has submitted so far, so `pct` is of
+what has been seen, not of the finished pipeline.
 
 ## On an HPC / remote server
 

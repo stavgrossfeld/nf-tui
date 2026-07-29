@@ -1306,3 +1306,79 @@ def test_find_tool_image_returns_none_when_nothing_provides_it(tmp_path, monkeyp
         '/bin/bash -c "eval ..."\n')
     monkeypatch.setattr(m, "_image_has", lambda *a: False)
     assert m.find_tool_image(tmp_path, "samtools") is None
+
+
+# ---- JSON report (for agents and scripts) ----------------------------------
+
+def test_run_report_nests_logs_and_errors_per_task(tmp_path):
+    """The JSON an agent reads: state, metrics, cause, and the command files.
+
+    Nested per task on purpose — debugging a failure otherwise means walking
+    Nextflow's work tree by hand to find which hash owns which .command.err.
+    """
+    from nf_tui import run_report
+
+    ok = tmp_path / "work" / "aa" / "111111beef"
+    bad = tmp_path / "work" / "bb" / "222222beef"
+    for wd in (ok, bad):
+        wd.mkdir(parents=True)
+        (wd / ".command.sh").write_text("run_the_thing --flag\n")
+        (wd / ".command.log").write_text("some output\n")
+    (bad / ".command.err").write_text("boom: segfault\n")
+    (ok / ".command.trace").write_text(
+        "nextflow.trace/v2\nrealtime=1500\npeak_rss=2048\n")
+
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"Jul-15 10:00:00.000 [Task monitor] DEBUG - Task completed > "
+        f"TaskHandler[id: 1; name: P:GOOD (s1); status: COMPLETED; exit: 0; "
+        f"error: -; workDir: {ok}]\n"
+        f"Jul-15 10:00:05.000 [Task monitor] DEBUG - Task completed > "
+        f"TaskHandler[id: 2; name: P:BAD (s2); status: COMPLETED; exit: 1; "
+        f"error: -; workDir: {bad}]\n"
+        f"Jul-15 10:00:06.000 [TaskFinalizer-1] ERROR nextflow.processor."
+        f"TaskProcessor - Error executing process > 'P:BAD (s2)'\n"
+        f"\nCaused by:\n  Process `P:BAD (s2)` terminated with an error exit "
+        f"status (1)\n\nWork dir:\n  {bad}\n"
+        f"Jul-15 10:00:07.000 [main] DEBUG nextflow.Session - done\n")
+
+    rep = run_report(log, logs="failed")
+    assert rep["progress"]["total"] == 2 and rep["progress"]["failed"] == 1
+    assert rep["progress"]["total_is_final"] is True
+    assert rep["processes"] == ["P:BAD", "P:GOOD"]
+
+    by = {t["hash"]: t for t in rep["tasks"]}
+    good, bad_t = by["aa/111111"], by["bb/222222"]
+
+    assert good["failed"] is False and good["metrics"]["realtime_ms"] == 1500
+    assert "logs" not in good                       # logs="failed" skips it
+
+    assert bad_t["failed"] is True and bad_t["exit"] == "1"
+    assert "terminated with an error exit status (1)" in bad_t["error"]["summary"]
+    assert bad_t["logs"]["err"].strip() == "boom: segfault"
+    assert "run_the_thing" in bad_t["logs"]["script"]
+
+    # logs="all" reaches the healthy task too; "none" reaches neither
+    assert "logs" in {t["hash"]: t for t in
+                      run_report(log, logs="all")["tasks"]}["aa/111111"]
+    assert all("logs" not in t for t in run_report(log, logs="none")["tasks"])
+
+    only_bad = run_report(log, failed_only=True)["tasks"]
+    assert [t["hash"] for t in only_bad] == ["bb/222222"]
+
+
+def test_run_report_resolves_workdirs_for_in_flight_tasks(tmp_path):
+    # A task still running has no workDir in the log, so without resolving it
+    # by hash every executing task would be reported as merely "pending".
+    from nf_tui import run_report
+    wd = tmp_path / "work" / "cd" / "333333beef"
+    wd.mkdir(parents=True)
+    (wd / ".command.begin").write_text("")          # Nextflow: this one started
+    log = tmp_path / ".nextflow.log"
+    log.write_text("a INFO - [cd/333333] Submitted process > P:A (s1)\n")
+
+    rep = run_report(log)
+    assert rep["live"] is True
+    assert rep["progress"]["running"] == 1 and rep["progress"]["pending"] == 0
+    assert rep["progress"]["total_is_final"] is False
+    assert rep["tasks"][0]["workdir"] == str(wd)

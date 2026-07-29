@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import json
 import os
 import re
 import shlex
@@ -2497,6 +2498,112 @@ class RunPickerScreen(Screen):
         self.dismiss(None)
 
 
+LOG_CHARS = 20_000        # per captured file, so one runaway log can't dominate
+
+
+def _tail_text(path: Path, limit: int = LOG_CHARS) -> str | None:
+    """The last `limit` characters of a file, or None if it isn't there."""
+    try:
+        data = path.read_text(errors="replace")
+    except OSError:
+        return None
+    return data[-limit:] if len(data) > limit else data
+
+
+def run_report(log_file: Path, *, logs: str = "failed",
+               failed_only: bool = False) -> dict:
+    """Everything nf-tui knows about a run, as plain data.
+
+    Built for agents and scripts: the same parsing the UI uses, but nested per
+    task and including the command files, so debugging a failure needs neither
+    a terminal nor a walk through Nextflow's work tree.
+
+    `logs` selects which tasks carry their .command.* contents: "failed" (the
+    default — the debugging case, and cheap), "all", or "none".
+    """
+    tasks = parse_log(log_file)
+    work_root = find_work_root(log_file)
+    # An in-flight task carries no workDir in the log — Nextflow records it only
+    # when the task completes — so resolve it by hash first. Without this every
+    # executing task reports as "pending", since there is no .command.begin to
+    # look for and no work dir to look in.
+    for t in tasks:
+        if not t.workdir and t.status.upper() in IN_FLIGHT:
+            found = resolve_workdir(work_root, t.hash)
+            if found:
+                t.workdir = found
+    prog = progress_of(tasks, check_fs=True)
+    errors = parse_errors(log_file)
+
+    out_tasks = []
+    for t in tasks:
+        if failed_only and not is_failed(t):
+            continue
+        proc, tag = split_name(t.name)
+        m = parse_trace(t.workdir) if t.workdir else Metrics()
+        state = task_state(t)
+        entry: dict = {
+            "hash": t.hash,
+            "name": t.name,
+            "process": proc,
+            "tag": tag,
+            "status": t.status,
+            "state": state,
+            "exit": t.exit,
+            "cached": t.cached,
+            "attempts": t.attempts,
+            "workdir": t.workdir or None,
+            "failed": is_failed(t),
+        }
+        if m.has_data():
+            entry["metrics"] = {
+                "realtime_ms": m.realtime_ms,
+                "pct_cpu": m.pct_cpu,
+                "peak_rss_kb": m.peak_rss_kb,
+                "pct_mem": m.pct_mem,
+            }
+        if is_failed(t):
+            block = errors.get(t.hash) or errors.get(f"name:{t.name}")
+            if block:
+                entry["error"] = {"summary": error_summary(block),
+                                  "report": block}
+        want = logs == "all" or (logs == "failed" and is_failed(t))
+        if want and t.workdir:
+            wd = Path(t.workdir)
+            captured = {}
+            for key, name in (("script", ".command.sh"),
+                              ("out", ".command.out"),
+                              ("err", ".command.err"),
+                              ("log", ".command.log")):
+                body = _tail_text(wd / name)
+                if body:
+                    captured[key] = body
+            if captured:
+                entry["logs"] = captured
+        out_tasks.append(entry)
+
+    return {
+        "log": str(log_file),
+        "work_dir": str(work_root),
+        "live": bool(tasks) and any(
+            t.status.upper() in IN_FLIGHT for t in tasks),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "progress": {
+            "total": prog.total, "done": prog.done, "failed": prog.failed,
+            "cached": prog.cached, "running": prog.running,
+            "pending": prog.pending, "pct": prog.pct,
+            "per_min": round(prog.per_min, 2) if prog.per_min else None,
+            "eta_secs": round(prog.eta_secs) if prog.eta_secs else None,
+            # Mid-run the total keeps growing (Nextflow announces tasks as
+            # channels emit), so `pct` is of what has been seen so far.
+            "total_is_final": not any(
+                t.status.upper() in IN_FLIGHT for t in tasks),
+        },
+        "processes": sorted({split_name(t.name)[0] for t in tasks}),
+        "tasks": out_tasks,
+    }
+
+
 def main() -> None:
     # `nf-tui nextflow run …` — prefix any nextflow command to launch it and
     # watch it live. Handled before argparse, which would reject the trailing
@@ -2519,6 +2626,17 @@ def main() -> None:
                "nf-tui nextflow run nf-core/sarek -profile test,docker")
     ap.add_argument("path", nargs="?", default=".",
                     help="a run directory, a .nextflow.log, or a directory to search")
+    ap.add_argument("--json", action="store_true",
+                    help="print the run as JSON instead of opening the UI: "
+                         "progress, every task, and the command logs")
+    ap.add_argument("--logs", choices=["none", "failed", "all"], default="failed",
+                    help="which tasks carry their .command.* contents (default: "
+                         "failed — the debugging case, and cheap)")
+    ap.add_argument("--failed", action="store_true",
+                    help="with --json, report only the failed tasks")
+    ap.add_argument("--watch", type=float, metavar="SECS",
+                    help="with --json, keep printing one JSON object per line "
+                         "every SECS while the run is live")
     args = ap.parse_args()
 
     target = Path(args.path).expanduser()
@@ -2532,6 +2650,25 @@ def main() -> None:
 
     if not target.is_file() and not gather_runs(target):
         sys.exit(f"nf-tui: no .nextflow.log found under {target}")
+
+    if args.json:
+        log = target if target.is_file() else gather_runs(target)[0].path
+        emit = lambda: json.dumps(                      # noqa: E731
+            run_report(log, logs=args.logs, failed_only=args.failed))
+        if not args.watch:
+            print(emit())
+            return
+        # One object per line (JSON Lines) so a reader can consume updates as
+        # they arrive rather than waiting for the run to finish.
+        try:
+            while True:
+                print(emit(), flush=True)
+                report = run_report(log, logs="none")
+                if not report["live"]:
+                    return
+                time.sleep(max(0.5, args.watch))
+        except KeyboardInterrupt:
+            return
     # One app for the whole session: the run picker is a screen inside it
     # (so it works over the web via textual-serve, which serves one app).
     NfScope(target).run()
