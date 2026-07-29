@@ -783,12 +783,31 @@ def _label_state(t: Task) -> str:
     return "pending"
 
 
-def progress_bar(done: int, total: int, width: int = 12) -> str:
-    """'████████░░░░' — a bar that survives the plain-text header."""
+def progress_bar(done: int, total: int, width: int = 12) -> tuple[str, str]:
+    """('████████', '░░░░') — filled and empty kept apart so the caller can
+    colour them differently. A run with no tasks yet still gets a full track
+    rather than nothing, so the header doesn't look broken before the first
+    task appears."""
     if total <= 0:
-        return ""
-    filled = round(width * done / total)
-    return "█" * filled + "░" * (width - filled)
+        return "", "░" * width
+    filled = min(width, round(width * done / total))
+    return "█" * filled, "░" * (width - filled)
+
+
+class NfHeader(Static):
+    """The top bar. A plain Static rather than Textual's Header, because Header
+    renders its subtitle as unstyled text (so the progress bar could not be
+    coloured) and docks an 8-column ⭘ icon for a command palette nf-tui does
+    not use."""
+
+    DEFAULT_CSS = """
+    NfHeader {
+        dock: top; height: 1; width: 100%;
+        background: $panel; color: $foreground;
+        content-align: center middle;
+        text-wrap: nowrap; text-overflow: ellipsis;
+    }
+    """
 
 
 def _proc_label(proc: str, tasks: list[Task]) -> Text:
@@ -910,9 +929,6 @@ class NfScope(App):
     #log:focus { border: round $accent; }
     #search { display: none; height: 3; border: round $accent; }
     #search.on { display: block; }
-    /* The header's ⭘ icon docks 8 columns on the left and only opens a command
-       palette we don't use — hide it and give the space back to the summary. */
-    HeaderIcon { display: none; }
     """
     BINDINGS = [
         Binding("tab", "focus_next_pane", "Next pane", show=False),
@@ -986,7 +1002,7 @@ class NfScope(App):
         self._backfilling = False        # guard: backfill moves scroll_y itself
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield NfHeader(id="hdr")
         with Vertical():
             tree: Tree = Tree("processes", id="tasks")
             tree.show_root = False
@@ -1132,8 +1148,8 @@ class NfScope(App):
         # announces tasks as channels emit them — so call it what it is
         # ("seen") rather than implying the run is 93% done when it isn't.
         noun = "seen" if live else "tasks"
-        bar = progress_bar(prog.done, prog.total)
-        summary = (f"{bar} {prog.pct}%  {prog.done:,}/{prog.total:,} {noun} "
+        filled, track = progress_bar(prog.done, prog.total)
+        summary = (f"{prog.pct}%  {prog.done:,}/{prog.total:,} {noun} "
                    f"· {nproc} processes")
         if prog.cached:
             summary += f" · {prog.cached:,} cached"
@@ -1154,7 +1170,19 @@ class NfScope(App):
         if self.sort_mode != "order":
             summary += f" · sorted by {self.sort_mode}"
         loc = str(self.log_file).replace(str(Path.home()), "~")
-        self.sub_title = f"{summary}  —  {loc}"
+        self.sub_title = f"{filled}{track} {summary}  —  {loc}"   # window title
+        # The bar carries the run's disposition: red if anything failed, yellow
+        # while work is still moving, green once it's cleanly done.
+        bar_style = ("bold red" if prog.failed
+                     else "bold yellow" if live else "bold green")
+        header = Text()
+        header.append("nf-tui", style="bold")
+        header.append("  ")
+        header.append(filled, style=bar_style)
+        header.append(track, style="dim")
+        header.append(f"  {summary}")
+        header.append(f"  —  {loc}", style="dim")
+        self._set_header(header)
         # A full rebuild (clear + re-add) is needed when the filter OR the sort
         # changes, because the in-place sync only appends/updates, never reorders.
         build_key = (self.failed_only, self.query_str, self.sort_mode)
@@ -2016,6 +2044,12 @@ class NfScope(App):
         self.notify(f"showing {'failed only' if self.failed_only else 'all'} "
                     f"({n} failed)")
 
+    def _set_header(self, content: Text) -> None:
+        """Paint the top bar. Defensive: another screen may be on top."""
+        bars = self.query("#hdr")
+        if bars:
+            bars.first(Static).update(content)
+
     def _pipeline_alive(self) -> bool:
         if self.pipeline_pid is None:
             return False
@@ -2388,14 +2422,23 @@ class RunPickerScreen(Screen):
         self.runs = runs
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield NfHeader(id="hdr")
         # A real table: one row per run, aligned columns, sortable by eye.
         yield DataTable(id="runs", cursor_type="row", zebra_stripes=True)
         yield Footer()
 
     def on_mount(self) -> None:
-        self.app.sub_title = (f"select a run under {self.base}"
-                              "   —   ● running · ⚠ stalled · ✓ complete · ✗ failed")
+        head = Text()
+        head.append("nf-tui", style="bold")
+        head.append(f"  select a run under {self.base}   —   ")
+        for mark, word, style in (("●", "running", STATE_STYLE["running"]),
+                                  ("⚠", "stalled", "bold red"),
+                                  ("✓", "complete", STATE_STYLE["done"]),
+                                  ("✗", "failed", STATE_STYLE["failed"])):
+            head.append(f"{mark} {word}", style=style)
+            head.append(" · ", style="dim")
+        self.query_one("#hdr", Static).update(head)
+        self.app.sub_title = f"select a run under {self.base}"
         table = self.query_one("#runs", DataTable)
         table.add_columns("", "STATE", "WHEN", "AGE",
                           "TASKS", "DONE", "FAIL", "CACHED",

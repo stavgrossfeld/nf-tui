@@ -1,88 +1,51 @@
-# nf-tui demo — a live pipeline and a finished nf-core/sarek run.
-# Render with:  vhs demo.tape   (produces demo.gif)
+# nf-tui demo — a real pipeline, recorded in real time.
 #
-# Expects, under ~/scratch: a pipeline currently running (so the picker shows a
-# ● running row and the queue view has something in flight) and the completed
-# nf-core/sarek run.
+# Nothing here is sped up or stitched together: the pipeline is launched from
+# the prompt and the recording simply watches it run, so the progress bar, the
+# task tree, the throughput and the queue all move at the speed they really do.
+#
+# Render with:  vhs demo.tape && ./make_demo.sh
+#   vhs records at 2x into demo_raw.mp4; make_demo.sh adds the camera
+#   moves and writes demo.gif. Recording big keeps the zooms sharp.
+# Expects ~/scratch/demo_live/main.nf — a 40-task pipeline where task 9 fails.
 
-Output demo.gif
-Set FontSize 15
-Set Width 1500
-Set Height 860
-Set Padding 14
+Output demo_raw.gif
+Set FontSize 30
+Set Width 3000
+Set Height 1600
+Set Padding 24
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 45ms
+Set TypingSpeed 40ms
 
 Hide
-Type "export PATH=$HOME/.local/bin:$PATH; cd ~/scratch; clear"
+Type "export PATH=$HOME/.local/bin:$PATH; cd ~/scratch/demo_live; rm -rf work .nextflow* run.out; clear"
 Enter
+Sleep 2s
 Show
 
-# ── The run picker: every run under a directory, as a table ────────────────
-Type "nf-tui"
-Sleep 500ms
-Enter
-Sleep 4.5s
-
-# Move down to the finished sarek run and open it.
-Down
-Sleep 2s
-Enter
-Sleep 3.5s
-
-# ── Sort so the slowest process floats to the top ──────────────────────────
-Type "s"
-Sleep 3.5s
-
-# ── Failure triage: jump to the failure and read why it failed ─────────────
-Type "e"
-Sleep 4.5s
-
-# ── Filter the tree as you type ────────────────────────────────────────────
-Type "/"
+# ── Launch it and watch: just prefix your nextflow command ─────────────────
+Type "nf-tui nextflow run main.nf -process.maxForks 4"
 Sleep 700ms
-Type "FASTQC"
-Sleep 2.5s
-Escape
-Sleep 1.5s
-
-# ── A task's output files, previewed in place ──────────────────────────────
-# Clearing the filter rebuilds the tree, so step onto a task leaf first.
-Down 2
-Sleep 1.2s
-Type "d"
-Sleep 3.5s
-
-# Step through a couple of outputs; each previews on the right.
-Down
-Sleep 2s
-Down
-Sleep 2.5s
-
-# ── The whole run log, paged in less (lazy — instant on a huge file) ────────
-Escape
-Sleep 800ms
-Type "g"
-Sleep 2s
-Type "L"
-Sleep 3s
-Space
-Sleep 1.5s
-Type "q"
-Sleep 1.8s
-
-Type "Q"
-Sleep 1.2s
-
-# ── Now a pipeline that is still running: progress, throughput, ETA … ──────
-Type "nf-tui ~/scratch/demo_live"
-Sleep 400ms
 Enter
-Sleep 4.5s
 
-# ── … and what's actually running right now, squeue-style ──────────────────
+# Nextflow starts up, then the tree fills and the header climbs — all live.
+Sleep 17s
+
+# ── What's actually running right now (elapsed times tick up) ──────────────
 Type "p"
+Sleep 8s
+
+# Back to the tree; a task has failed by now (red ✗).
+Escape
 Sleep 5s
 
+# ── Jump straight to the failure and read why ──────────────────────────────
+Type "e"
+Sleep 8s
+
+# ── Sort by slowest, still updating as the run continues ───────────────────
+Type "s"
+Sleep 4s
+
 Type "Q"
-Sleep 1.5s
+Sleep 2s
