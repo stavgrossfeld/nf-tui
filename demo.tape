@@ -8,14 +8,12 @@
 #
 # Render with:
 #   vhs demo.tape
-#   ZOOM=0 REAL_SECS=84 OUT_W=1300 FF_UNTIL=45 FF_RATE=15 ./make_demo.sh
+#   python smooth_retime.py demo_raw.gif demo.gif
 #
-# FF_UNTIL covers Nextflow's boot so the clip reaches the first task in ~4s.
-# It is expressed in the corrected timeline, which is longer than the boot's
-# wall clock (~33s here): vhs drops more frames while the screen is static, so
-# the boot occupies a larger share of the stretched clip than of real time.
-# If a re-recording boots slower, raise it — check when tasks appear with:
-#   ffmpeg -ss 4 -i demo.gif -frames:v 1 /tmp/f.png
+# smooth_retime corrects vhs's dropped-frame timing, finds where the first task
+# appears (so the boot window needs no tuning), runs the boot fast, and eases
+# back to real time over a couple of seconds rather than cutting.
+#
 # Expects docker running and the nf-core/sarek test data reachable.
 
 Output demo_raw.gif
