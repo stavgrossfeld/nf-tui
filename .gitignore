@@ -1,6 +1,7 @@
+*.egg-info/
+.venv/
+__pycache__/
+build/
 demo_raw.gif
 demo_raw.mp4
 dist/
-*.egg-info/
-__pycache__/
-.venv/
