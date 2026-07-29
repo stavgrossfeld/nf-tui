@@ -77,6 +77,9 @@ _HANDLER_RE = re.compile(
     r"error: (?P<error>[^;]+); workDir: (?P<workdir>[^\]]+)\]"
 )
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# The container invocation inside .command.run, wherever it appears on the line.
+_ENGINE_RE = re.compile(r"\b(docker|podman)\s+run\b"
+                        r"|\b(singularity|apptainer)\s+(?:exec|run)\b")
 _TIMESTAMP_RE = re.compile(r"^([A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{1,6})")
 
 
@@ -645,16 +648,19 @@ def parse_container_run(workdir: str) -> tuple[str, list[str], str] | None:
         text = (Path(workdir) / ".command.run").read_text(errors="replace")
     except OSError:
         return None
+    # The invocation is rarely at the start of the line: Nextflow prefixes the
+    # singularity one with environment setup —
+    #   set +u; env - PATH="$PATH" ${TMP:+SINGULARITYENV_TMP="$TMP"} singularity exec ...
+    # — so match the engine anywhere and read from there. Anchoring on the start
+    # of the line meant every Singularity/Apptainer run parsed as "no container",
+    # which is the HPC case this feature exists for.
     engine = line = None
     for raw in text.splitlines():
         s = raw.strip()
-        if (s.startswith("docker ") or s.startswith("podman ")) and " run " in s:
-            engine = s.split(None, 1)[0]
-            line = s
-            break
-        if (s.startswith(("singularity ", "apptainer "))) and (" exec " in s or " run " in s):
-            engine = s.split(None, 1)[0]
-            line = s
+        m = _ENGINE_RE.search(s)
+        if m:
+            engine = m.group(1) or m.group(2)
+            line = s[m.start():]       # drop the env prefix before the engine
             break
     if line is None:
         return None
@@ -1760,8 +1766,13 @@ class NfScope(App):
         # No -i: the container must NOT read the terminal, or it steals the
         # keystrokes meant for the pager (samtools reads the file, not stdin).
         inner = f"cd {shlex.quote(t.workdir)} && exec {tool} {shlex.quote(str(p))}"
-        parts = ([engine, "run", "--rm"] + mounts
-                 + ["-w", t.workdir, image, "sh", "-c", inner])
+        if engine in ("docker", "podman"):
+            parts = ([engine, "run", "--rm"] + mounts
+                     + ["-w", t.workdir, image, "sh", "-c", inner])
+        else:
+            # singularity/apptainer: `exec`, and none of docker's --rm/-w — the
+            # inner `cd` already puts us in the work dir.
+            parts = [engine, "exec"] + mounts + [image, "sh", "-c", inner]
         return " ".join(shlex.quote(x) for x in parts) + f" 2>&1 | {pager} -R"
 
     def _current_file(self) -> tuple[Task | None, Path | None]:

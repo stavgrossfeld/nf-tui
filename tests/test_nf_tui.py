@@ -1382,3 +1382,64 @@ def test_run_report_resolves_workdirs_for_in_flight_tasks(tmp_path):
     assert rep["progress"]["running"] == 1 and rep["progress"]["pending"] == 0
     assert rep["progress"]["total_is_final"] is False
     assert rep["tasks"][0]["workdir"] == str(wd)
+
+
+# ---- container engines other than docker -----------------------------------
+
+# Verbatim shape of the line Nextflow writes for Singularity: the invocation is
+# NOT at the start — it is preceded by environment setup.
+SINGULARITY_RUN = (
+    'nxf_launch() {\n'
+    '    set +u; env - PATH="$PATH" ${TMP:+SINGULARITYENV_TMP="$TMP"} '
+    '${TMPDIR:+SINGULARITYENV_TMPDIR="$TMPDIR"} singularity exec --no-home '
+    '-B /scratch:/scratch -B "$NXF_TASK_WORKDIR" /images/samtools_1.21.sif '
+    '/bin/bash -c "cd $NXF_TASK_WORKDIR; eval $(nxf_container_env); '
+    '/bin/bash -ue .command.sh"\n}\n'
+)
+
+
+def test_parses_singularity_despite_the_env_prefix(tmp_path):
+    """Anchoring on the start of the line broke every Singularity run.
+
+    Nextflow prefixes the invocation with `set +u; env - PATH=... ` so a check
+    for a line *starting* with "singularity" never matched, and every task on a
+    cluster parsed as "no container found" — in the HPC case this exists for.
+    """
+    wd = tmp_path / "work" / "ab" / "cd"
+    wd.mkdir(parents=True)
+    (wd / ".command.run").write_text(SINGULARITY_RUN)
+
+    spec = parse_container_run(str(wd))
+    assert spec is not None, "singularity invocation not found"
+    engine, mounts, image = spec
+    assert engine == "singularity"
+    assert image == "/images/samtools_1.21.sif"
+    assert "-B" in mounts and "/scratch:/scratch" in mounts
+    # $NXF_TASK_WORKDIR is expanded to the real work dir so binds resolve
+    assert str(wd) in mounts
+
+
+def test_parses_apptainer(tmp_path):
+    wd = tmp_path / "work" / "ef" / "gh"
+    wd.mkdir(parents=True)
+    (wd / ".command.run").write_text(
+        '    env - PATH="$PATH" apptainer exec -B /data:/data '
+        '/img/tools.sif /bin/bash -c "eval x"\n')
+    spec = parse_container_run(str(wd))
+    assert spec is not None
+    assert spec[0] == "apptainer" and spec[2] == "/img/tools.sif"
+
+
+def test_singularity_pager_and_viewer_commands(tmp_path):
+    """The decode command for a .sif uses `exec`, not `run --rm`."""
+    wd = tmp_path / "work" / "ab" / "cd"
+    wd.mkdir(parents=True)
+    (wd / ".command.run").write_text(SINGULARITY_RUN)
+    (wd / "test.cram").write_bytes(b"CRAM\x00")
+
+    app = NfScope(tmp_path)
+    t = Task(hash="ab/cd", name="P (s)", workdir=str(wd))
+    cmd = app._pager_command(t, wd / "test.cram", "less")
+    assert "singularity" in cmd and " exec " in cmd
+    assert "--rm" not in cmd                       # that is a docker flag
+    assert "samtools view -h" in cmd and "| less" in cmd
