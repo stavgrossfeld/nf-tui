@@ -1103,6 +1103,85 @@ def test_queue_view_lists_running_then_pending(tmp_path):
     assert drive(NfScope(log), steps)
 
 
+def test_stop_pipeline_needs_confirmation_and_sends_sigterm(tmp_path, monkeypatch):
+    """K stops a pipeline nf-tui launched — but only after a yes.
+
+    SIGTERM, not SIGINT: measured against a real run, SIGINT was ignored while
+    SIGTERM triggered Nextflow's own handler ("Killing running tasks") and left
+    no orphaned task processes. That handler is what cancels scheduler jobs.
+    """
+    import signal
+    from nf_tui import ConfirmScreen
+
+    log = make_run(tmp_path, n_tasks=10, n_procs=2)
+    monkeypatch.setenv("NF_TUI_PID", "4242")
+    sent = []
+    monkeypatch.setattr(nf_tui.os, "kill",
+                        lambda pid, sig: sent.append((pid, sig)))
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        assert app.pipeline_pid == 4242
+
+        await pilot.press("K")                     # asks first
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen)
+        await pilot.press("n")                     # declined
+        await pilot.pause()
+        assert not [s for s in sent if s[1] != 0], "declining must not signal"
+
+        await pilot.press("K")
+        await pilot.pause()
+        await pilot.press("y")                     # confirmed
+        await pilot.pause()
+        assert (4242, signal.SIGTERM) in sent
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_stop_pipeline_says_so_when_it_did_not_launch_the_run(tmp_path, monkeypatch):
+    monkeypatch.delenv("NF_TUI_PID", raising=False)
+    log = make_run(tmp_path, n_tasks=5, n_procs=1)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        assert app.pipeline_pid is None
+        notes = []
+        app.notify = lambda m, **k: notes.append(m)
+        await pilot.press("K")
+        await pilot.pause()
+        assert notes and "didn't launch" in notes[-1]
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_no_tasks_placeholder_disappears_once_tasks_arrive(tmp_path):
+    # Opening a just-launched run shows "(no tasks yet)". The in-place sync only
+    # appends, so without removing it the message sat above the tree forever —
+    # which is every run opened with `nf-tui nextflow run`.
+    log = tmp_path / ".nextflow.log"
+    log.write_text("")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        tree = app.query_one("#tasks", Tree)
+        assert any("no tasks yet" in str(n.label) for n in tree.root.children)
+
+        log.write_text("x INFO - [ab/111111] Submitted process > P:A (s1)\n")
+        app._force_refresh = True
+        app.action_refresh()
+        await pilot.pause()
+
+        labels = [str(n.label) for n in tree.root.children]
+        assert not any("no tasks yet" in l for l in labels), labels
+        assert any("A" in l for l in labels)
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
 # ---- scale -----------------------------------------------------------------
 
 def test_parse_10k_is_fast(tmp_path):

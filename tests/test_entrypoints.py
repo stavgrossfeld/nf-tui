@@ -125,3 +125,37 @@ def test_serve_builds_a_command_for_a_real_run(tmp_path, monkeypatch):
     # with its own working directory, so a relative path would not resolve
     assert "NF_TUI_WEB=1" in cmd
     assert str(log.resolve()) in cmd
+
+
+# ---- `nf-tui nextflow run …` passthrough ------------------------------------
+
+def test_nf_tui_nextflow_passes_the_command_through_verbatim(monkeypatch):
+    """`nf-tui nextflow run …` prefixes an ordinary nextflow command.
+
+    It must reach nextflow exactly as typed — including options that belong
+    before `run` — so nothing the user relies on is dropped or reordered.
+    """
+    import nf_tui
+
+    seen = {}
+    monkeypatch.setattr(nf_tui_run, "launch", lambda cmd: seen.setdefault("cmd", cmd))
+    monkeypatch.setattr(sys, "argv",
+                        ["nf-tui", "nextflow", "run", "nf-core/sarek",
+                         "-profile", "test,docker", "--outdir", "out"])
+    nf_tui.main()
+    assert seen["cmd"] == ["nextflow", "run", "nf-core/sarek",
+                           "-profile", "test,docker", "--outdir", "out"]
+
+    seen.clear()
+    monkeypatch.setattr(sys, "argv",
+                        ["nf-tui", "nextflow", "-log", "x.log", "run", "main.nf"])
+    nf_tui.main()
+    assert seen["cmd"] == ["nextflow", "-log", "x.log", "run", "main.nf"]
+
+
+def test_nf_tui_nextflow_alone_explains_itself(monkeypatch):
+    import nf_tui
+    monkeypatch.setattr(sys, "argv", ["nf-tui", "nextflow"])
+    with pytest.raises(SystemExit) as e:
+        nf_tui.main()
+    assert "full nextflow command" in str(e.value)

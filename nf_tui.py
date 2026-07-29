@@ -30,6 +30,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -42,9 +43,9 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (DataTable, Footer, Header, Input, OptionList,
-                             RichLog, Tree)
+                             RichLog, Static, Tree)
 from textual.widgets.option_list import Option
 
 REFRESH_SECONDS = 1.0
@@ -929,6 +930,7 @@ class NfScope(App):
         Binding("r", "refresh", "Refresh"),
         # Shift+Q, not q: quitting is one keystroke from many others and a
         # stray lowercase q should not tear down a session you are watching.
+        Binding("K", "stop_pipeline", "Stop run"),
         Binding("Q", "quit", "Quit"),
     ]
 
@@ -946,9 +948,13 @@ class NfScope(App):
         self.query_str = ""         # / search: substring over task name or hash
         self.sort_mode = "order"    # order | slowest | memory  (s cycles)
         self.web = bool(os.environ.get("NF_TUI_WEB"))  # served in a browser: no less
+        # Set when nf-tui launched the pipeline itself, so K can stop it.
+        pid = os.environ.get("NF_TUI_PID")
+        self.pipeline_pid = int(pid) if pid and pid.isdigit() else None
         self.follow = True
         self.view = "task"   # task | container | files | run | queue
         self._progress: Progress | None = None
+        self._placeholder = None                 # the '(no tasks yet)' leaf
         self._live_states: dict[str, str] = {}   # in-flight hash -> running/pending
         self._work_root: Path | None = None      # this run's work/ tree
         self._workdir_cache: dict[str, str] = {}  # task hash -> resolved work dir
@@ -1045,6 +1051,7 @@ class NfScope(App):
         self._work_root = None
         self._workdir_cache = {}
         self._live_states = {}
+        self._placeholder = None
         self._files = []
         self._files_task = None
         self._last_file = None
@@ -1221,6 +1228,7 @@ class NfScope(App):
         tree.clear()
         self._proc_nodes = {}
         self._task_nodes = {}
+        self._placeholder = None
         self._sync_tree()
         if not self._proc_nodes:
             if self.query_str:
@@ -1229,12 +1237,21 @@ class NfScope(App):
                 msg = "(no failed tasks)"
             else:
                 msg = "(no tasks yet)"
-            tree.root.add_leaf(msg)
+            self._placeholder = tree.root.add_leaf(msg)
 
     def _sync_tree(self) -> None:
         """Update the tree IN PLACE — update labels, append new nodes. Never
         clears, so the cursor, focus and scroll position are left untouched."""
         tree = self.query_one("#tasks", Tree)
+        # Drop the "(no tasks yet)" leaf once real ones arrive: this sync only
+        # appends, so otherwise it sits above the tree for the rest of the run
+        # — which is every run opened with `nf-tui nextflow run`.
+        if self._placeholder is not None and self._groups:
+            try:
+                self._placeholder.remove()
+            except Exception:                      # noqa: BLE001 — already gone
+                pass
+            self._placeholder = None
         for proc, tasks in self._groups.items():
             pnode = self._proc_nodes.get(proc)
             if pnode is None:
@@ -1994,6 +2011,52 @@ class NfScope(App):
         self.notify(f"showing {'failed only' if self.failed_only else 'all'} "
                     f"({n} failed)")
 
+    def _pipeline_alive(self) -> bool:
+        if self.pipeline_pid is None:
+            return False
+        try:
+            os.kill(self.pipeline_pid, 0)      # signal 0: existence check only
+            return True
+        except OSError:
+            return False
+
+    def action_stop_pipeline(self) -> None:
+        """Stop the pipeline nf-tui launched, after confirming.
+
+        Nextflow has no `cancel` command: you signal the process. SIGTERM is
+        the one it handles — measured, not assumed: SIGINT was ignored (the run
+        kept submitting for 20s), while SIGTERM stopped it in ~2s and its log
+        showed "[SIGTERM handler] Killing running tasks (4)" with no orphaned
+        task processes left behind. That handler is also what cancels jobs
+        already queued on a scheduler. SIGKILL would skip it and strand them.
+        """
+        if self.pipeline_pid is None:
+            self.notify("nf-tui didn't launch this run — stop it where you "
+                        "started it", severity="warning")
+            return
+        if not self._pipeline_alive():
+            self.notify(f"pipeline (PID {self.pipeline_pid}) is no longer running")
+            return
+
+        def stop(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            try:
+                os.kill(self.pipeline_pid, signal.SIGTERM)
+            except OSError as e:
+                self.notify(f"could not signal PID {self.pipeline_pid}: {e}",
+                            severity="error")
+                return
+            self.notify(f"sent SIGTERM to PID {self.pipeline_pid} — Nextflow is "
+                        "shutting down; watch the run log", severity="warning")
+
+        p = self._progress
+        detail = (f"PID {self.pipeline_pid}"
+                  + (f"  ·  {p.running} running, {p.pending} queued" if p else "")
+                  + "\n\nNextflow shuts down gracefully and cleans up the tasks it"
+                    " started\n(on a scheduler, that cancels the jobs it queued).")
+        self.push_screen(ConfirmScreen("Stop this pipeline?", detail), stop)
+
     def action_next_failed(self) -> None:
         """Jump the tree to the next failed task (wrapping), and show why it
         failed. On a big run this beats hunting for the ✗ by eye."""
@@ -2277,6 +2340,35 @@ def gather_runs(base: Path) -> list[RunInfo]:
     return infos
 
 
+class ConfirmScreen(ModalScreen[bool]):
+    """A yes/no gate, used before anything that kills real compute."""
+
+    CSS = """
+    ConfirmScreen { align: center middle; }
+    #box { width: 74; height: auto; border: thick $error; padding: 1 2;
+           background: $surface; }
+    """
+    BINDINGS = [Binding("escape,n", "no", "No"), Binding("y", "yes", "Yes")]
+
+    def __init__(self, question: str, detail: str = ""):
+        super().__init__()
+        self.question = question
+        self.detail = detail
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="box"):
+            yield Static(Text(self.question, style="bold"))
+            if self.detail:
+                yield Static(Text(self.detail, style="dim"))
+            yield Static(Text("\ny = yes     n / esc = no", style="dim"))
+
+    def action_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_no(self) -> None:
+        self.dismiss(False)
+
+
 class RunPickerScreen(Screen):
     """Pick which discovered run to open. Dismisses with the chosen log path
     (or None if cancelled). A screen — not a separate App — so the whole
@@ -2334,10 +2426,25 @@ class RunPickerScreen(Screen):
 
 
 def main() -> None:
+    # `nf-tui nextflow run …` — prefix any nextflow command to launch it and
+    # watch it live. Handled before argparse, which would reject the trailing
+    # pipeline arguments, and passed through verbatim so options that belong
+    # before `run` (e.g. `-log`, `-C`) still work.
+    argv = sys.argv[1:]
+    if argv and argv[0] == "nextflow":
+        if len(argv) == 1:
+            sys.exit("nf-tui: give a full nextflow command, e.g.\n"
+                     "  nf-tui nextflow run nf-core/sarek -profile test,docker")
+        from nf_tui_run import launch
+        launch(argv)
+        return
+
     ap = argparse.ArgumentParser(
         prog="nf-tui",
         description="Browse Nextflow tasks and logs. With no path, searches the "
-                    "current directory for runs and lets you pick one.")
+                    "current directory for runs and lets you pick one.",
+        epilog="launch a pipeline and watch it live:  "
+               "nf-tui nextflow run nf-core/sarek -profile test,docker")
     ap.add_argument("path", nargs="?", default=".",
                     help="a run directory, a .nextflow.log, or a directory to search")
     args = ap.parse_args()

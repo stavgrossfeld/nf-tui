@@ -10,6 +10,7 @@ as the pipeline progresses. Quitting nf-tui leaves the pipeline running.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -39,19 +40,28 @@ def main() -> None:
         return
     if not args:
         sys.exit(USAGE)           # missing arguments: stderr, exit 1
+    launch(["nextflow", "run", *args])
 
+
+def launch(cmd: list[str]) -> None:
+    """Run a full nextflow command in the background and watch it in nf-tui.
+
+    Takes the whole command (`["nextflow", "run", ...]`) rather than just the
+    run arguments, so `nf-tui nextflow …` can pass through exactly what the
+    user typed — including any options that belong before `run`.
+    """
     cwd = Path.cwd()
     console = cwd / ".nf-tui-run.out"          # nextflow's console output
 
     try:
         out = console.open("wb")
         proc = subprocess.Popen(
-            ["nextflow", "run", *args],
+            cmd,
             stdout=out, stderr=subprocess.STDOUT, cwd=str(cwd),
             start_new_session=True,            # survive nf-tui / terminal exit
         )
     except FileNotFoundError:
-        sys.exit("nf-tui-run: `nextflow` not found on PATH")
+        sys.exit(f"nf-tui: `{cmd[0]}` not found on PATH")
 
     # Wait (up to ~60s) for THIS run's .nextflow.log.
     #
@@ -67,14 +77,16 @@ def main() -> None:
         if now is not None and now != before:
             break
         if proc.poll() is not None:            # nextflow died before starting
-            sys.exit(f"nf-tui-run: nextflow exited early (rc={proc.returncode}). "
+            sys.exit(f"nf-tui: nextflow exited early (rc={proc.returncode}). "
                      f"See {console}")
         time.sleep(0.1)
     else:
-        print("nf-tui-run: no new .nextflow.log after 60s — opening what's there.",
+        print("nf-tui: no new .nextflow.log after 60s — opening what's there.",
               file=sys.stderr)
 
     print(f"nextflow running (PID {proc.pid}); opening nf-tui…")
+    # Tell the TUI which process this is, so K can stop it.
+    os.environ["NF_TUI_PID"] = str(proc.pid)
     # Open the TUI directly on this run's log (a file -> no run picker).
     sys.argv = ["nf-tui", str(log)]
     from nf_tui import main as tui
@@ -86,6 +98,9 @@ def main() -> None:
             print(f"\nnextflow still running (PID {proc.pid}).")
             print(f"  follow console:  tail -f {console}")
             print(f"  re-open viewer:  nf-tui {log}")
+            # Plain kill (SIGTERM): Nextflow handles that one and kills its
+            # running tasks — SIGINT is ignored, and kill -9 skips the handler
+            # and strands jobs already queued on a scheduler.
             print(f"  stop pipeline:   kill {proc.pid}")
 
 

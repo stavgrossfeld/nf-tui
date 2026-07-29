@@ -80,15 +80,24 @@ nf-tui                       # search the current directory, pick a run
 nf-tui /path/to/run          # open a run directory (or a .nextflow.log)
 nf-tui-web /path/to/run      # same UI in a browser (http://localhost:8000)
 
-# launch a pipeline AND watch it live, in one step:
-nf-tui-run nf-core/sarek -profile test,docker --outdir results
+# launch a pipeline AND watch it live — just prefix your nextflow command:
+nf-tui nextflow run nf-core/sarek -profile test,docker --outdir results
 ```
 
-`nf-tui-run` passes its arguments to `nextflow run`, starts it in the
-background (console output goes to `.nf-tui-run.out`), and opens nf-tui on the
-new run's `.nextflow.log` — updating live as tasks complete. Quitting nf-tui
-(`Q`) leaves the pipeline running; it prints the PID and how to follow or stop
-it. (Equivalent by hand: `nextflow run … & nf-tui .nextflow.log`.)
+Anything after `nf-tui nextflow` is passed to Nextflow verbatim, including
+options that belong before `run` (`-log`, `-C`, …). `nf-tui-run <args>` is the
+older spelling and still works.
+
+Nextflow runs in the background (console output goes to `.nf-tui-run.out`) and
+nf-tui opens on the new run's `.nextflow.log`, updating live as tasks complete.
+Quitting (`Q`) leaves the pipeline running and prints the PID and how to follow
+or stop it.
+
+**Stopping a run.** Nextflow has no `cancel` command — you signal the process.
+Press `K` in nf-tui to stop a pipeline it launched (it asks first). That sends
+`SIGTERM`, which is the signal Nextflow handles: its handler kills the running
+tasks, and on a scheduler cancels the jobs it queued. `SIGINT` is ignored, and
+`kill -9` skips the handler and strands submitted jobs.
 
 ## On an HPC / remote server
 
@@ -146,6 +155,7 @@ Notes for clusters:
 | `x` | show failed tasks only |
 | `o` | open the task's work directory |
 | `esc` | step back (content → list → tree → run picker) |
+| `K` | stop the pipeline nf-tui launched (asks first; sends SIGTERM) |
 | `Q` | quit (Shift+Q, so a stray `q` can't drop a live session) |
 
 ## How it works
