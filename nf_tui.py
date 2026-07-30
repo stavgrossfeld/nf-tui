@@ -972,6 +972,8 @@ class NfScope(App):
         Binding("f", "toggle_follow", "Follow"),
         Binding("s", "cycle_sort", "Sort"),
         Binding("e", "next_failed", "Next failure"),
+        Binding("n", "next_match", "Next match", show=False),
+        Binding("N", "prev_match", "Prev match", show=False),
         Binding("x", "toggle_failed", "Failed only"),
         Binding("o", "open_workdir", "Work dir"),
         Binding("r", "refresh", "Refresh"),
@@ -993,6 +995,10 @@ class NfScope(App):
         self.tasks: list[Task] = []
         self.failed_only = False
         self.query_str = ""         # / search: substring over task name or hash
+        self._search_mode = "tasks"  # what / is searching: tasks | log
+        self._log_query = ""        # the log search term
+        self._log_matches: list[int] = []   # line numbers that matched
+        self._log_i = -1            # which match we are sitting on
         self.sort_mode = "order"    # order | slowest | memory  (s cycles)
         self.web = bool(os.environ.get("NF_TUI_WEB"))  # served in a browser: no less
         # Set when nf-tui launched the pipeline itself, so K can stop it.
@@ -1102,6 +1108,9 @@ class NfScope(App):
         self._live_states = {}
         self._placeholder = None
         self._auto_selected = False
+        self._log_query = ""
+        self._log_matches = []
+        self._log_i = -1
         self._select_tries = 0
         self._files = []
         self._files_task = None
@@ -2198,9 +2207,21 @@ class NfScope(App):
     # ---- / search over the task tree ---------------------------------------
 
     def action_search(self) -> None:
+        """`/` — filter the task tree, or search the log if that's what you're
+        reading. Which one is decided by focus, so the pane with the highlighted
+        border is the thing being searched."""
+        log = self.query_one("#log", RichLog)
+        self._search_mode = "log" if (log.has_focus and self.view != "files") \
+            else "tasks"
         box = self.query_one("#search", Input)
         box.add_class("on")
-        box.value = self.query_str      # reopen with the current filter to edit
+        if self._search_mode == "log":
+            box.placeholder = "search this log — enter / n for next, N for previous"
+            box.value = self._log_query
+        else:
+            box.placeholder = ("filter tasks by name or hash — "
+                               "enter to keep, esc to clear")
+            box.value = self.query_str  # reopen with the current filter to edit
         box.focus()
 
     def _apply_query(self, text: str) -> None:
@@ -2209,18 +2230,83 @@ class NfScope(App):
         self._force_refresh = True      # re-group even though the log is unchanged
         self.action_refresh()
 
+    # ---- searching the log pane --------------------------------------------
+
+    def _log_text_lines(self) -> list[str]:
+        """The pane's contents as plain strings, styles dropped."""
+        panes = self.query("#log")
+        if not panes:
+            return []
+        return ["".join(seg.text for seg in strip)
+                for strip in panes.first(RichLog).lines]
+
+    def _search_log(self, text: str, *, announce: bool = True) -> None:
+        self._log_query = text
+        needle = text.strip().lower()
+        self._log_matches = ([i for i, line in enumerate(self._log_text_lines())
+                              if needle in line.lower()] if needle else [])
+        self._log_i = -1
+        if not self._log_matches:
+            if announce and needle:
+                self.notify(f'no match for "{text}" in this log')
+            return
+        self._jump_to_match(0, announce=announce)
+
+    def _jump_to_match(self, index: int, *, announce: bool = True) -> None:
+        if not self._log_matches:
+            if announce:
+                self.notify("search the log with / first")
+            return
+        self._log_i = index % len(self._log_matches)
+        line = self._log_matches[self._log_i]
+        panes = self.query("#log")
+        if not panes:
+            return
+        log = panes.first(RichLog)
+        # Following would drag the view straight back to the tail.
+        log.auto_scroll = False
+        log.scroll_to(y=line, animate=False)
+        if announce:
+            preview = self._log_text_lines()[line].strip()[:60]
+            self.notify(f"{self._log_i + 1}/{len(self._log_matches)}  ·  {preview}")
+
+    def action_next_match(self) -> None:
+        self._jump_to_match(self._log_i + 1)
+
+    def action_prev_match(self) -> None:
+        self._jump_to_match(self._log_i - 1)
+
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "search":
+        if event.input.id != "search":
+            return
+        if self._search_mode == "log":
+            # Quietly as you type; the count is reported on enter.
+            self._search_log(event.value, announce=False)
+        else:
             self._apply_query(event.value)   # filter live as you type
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "search":       # enter: keep the filter, leave the box
-            event.input.remove_class("on")
+        if event.input.id != "search":
+            return
+        event.input.remove_class("on")
+        if self._search_mode == "log":
+            self._search_log(event.value)    # report the count now
+            self.query_one("#log", RichLog).focus()
+        else:
             self.query_one("#tasks", Tree).focus()
 
     def _close_search(self, clear: bool) -> None:
         box = self.query_one("#search", Input)
         box.remove_class("on")
+        if self._search_mode == "log":
+            # Hand the pane back rather than the tree, so a second escape steps
+            # out of the view the way it does without a search.
+            if clear:
+                box.value = ""
+                self._log_query = ""
+                self._log_matches, self._log_i = [], -1
+            self.query_one("#log", RichLog).focus()
+            return
         if clear and self.query_str:
             box.value = ""
             self._apply_query("")

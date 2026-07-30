@@ -1510,3 +1510,106 @@ def test_cursor_lands_on_a_task_that_appears_after_opening(tmp_path):
         return True
 
     assert drive(NfScope(log), steps)
+
+
+# ---- searching the log pane ------------------------------------------------
+
+def test_slash_searches_the_log_when_that_pane_is_focused(tmp_path):
+    """`/` has to mean two things, and focus decides which.
+
+    Filtering the task tree and searching the log are both wanted, and `/` is
+    what a reader reaches for either way. It searches whichever pane has the
+    highlighted border, so the choice is visible rather than remembered.
+    """
+    log = tmp_path / ".nextflow.log"
+    lines = [f"Jul-15 10:00:{i:02d}.000 [main] DEBUG nextflow.Session - line {i}"
+             for i in range(40)]
+    lines[7] = ("Jul-15 10:00:07.000 [main] ERROR nextflow.processor."
+                "TaskProcessor - needle one")
+    lines[23] = ("Jul-15 10:00:23.000 [main] ERROR nextflow.processor."
+                 "TaskProcessor - needle two")
+    log.write_text("\n".join(lines) + "\n")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        pane.focus()
+        await pilot.pause()
+
+        await pilot.press("slash")
+        await pilot.pause()
+        assert app._search_mode == "log"
+
+        for ch in "needle":
+            await pilot.press(ch)
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert len(app._log_matches) == 2, app._log_matches
+        assert app._log_i == 0
+
+        def match_is_visible():
+            """The match sits in view — at the top, or as near as the pane can
+            scroll: a match close to the end clamps at max_scroll_y."""
+            line = app._log_matches[app._log_i]
+            top = pane.scroll_y
+            return top <= line <= top + pane.size.height
+
+        assert match_is_visible()
+
+        await pilot.press("n")                   # next match
+        await pilot.pause()
+        assert app._log_i == 1 and match_is_visible()
+
+        await pilot.press("n")                   # wraps around
+        await pilot.pause()
+        assert app._log_i == 0
+
+        await pilot.press("N")                   # and back
+        await pilot.pause()
+        assert app._log_i == 1
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_slash_still_filters_tasks_when_the_tree_is_focused(tmp_path):
+    log = make_run(tmp_path, n_tasks=40, n_procs=4)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        app.query_one("#tasks", Tree).focus()
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.pause()
+        assert app._search_mode == "tasks"
+        app._apply_query("PROC_002")
+        await pilot.pause()
+        shown = leaves(app.query_one("#tasks", Tree))
+        assert shown and all("proc_002" in n.data.name.lower() for n in shown)
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_log_search_reports_when_nothing_matches(tmp_path):
+    log = tmp_path / ".nextflow.log"
+    log.write_text("Jul-15 10:00:00.000 [main] DEBUG - only this line\n")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        app.query_one("#log", RichLog).focus()
+        await pilot.pause()
+        notes = []
+        app.notify = lambda m, **k: notes.append(m)
+        app._search_log("definitely-not-there")
+        assert app._log_matches == []
+        assert notes and "no match" in notes[-1]
+        # and n on an empty search says so rather than doing nothing
+        notes.clear()
+        app.action_next_match()
+        assert notes and "search the log" in notes[-1]
+        return True
+
+    assert drive(NfScope(log), steps)
