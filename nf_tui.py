@@ -112,6 +112,23 @@ def _line_time(line: str) -> float | None:
         return None
 
 
+_REMOTE_RE = re.compile(r"^(s3|gs|az|https?|ftp)://", re.I)
+
+
+def remote_scheme(workdir: str) -> str | None:
+    """'s3' for an object-store work dir, else None.
+
+    Cloud executors (AWS Batch, Google Batch, Azure) keep the work tree in object
+    storage, so everything nf-tui reads out of a work directory — task logs,
+    output files, .command.trace metrics, the .command.begin that separates
+    running from queued — is not on this filesystem at all. What comes from
+    .nextflow.log still works, and naming the reason beats a bare
+    "not available".
+    """
+    m = _REMOTE_RE.match(workdir or "")
+    return m.group(1).lower() if m else None
+
+
 def _short_hash(workdir: str) -> str:
     """/…/work/bf/4071830843d52… -> 'bf/407183' (matches console output)."""
     p = Path(workdir)
@@ -975,6 +992,7 @@ class NfScope(App):
         Binding("n", "next_match", "Next match", show=False),
         Binding("N", "prev_match", "Prev match", show=False),
         Binding("x", "toggle_failed", "Failed only"),
+        Binding("y", "copy_path", "Copy path"),
         Binding("o", "open_workdir", "Work dir"),
         Binding("r", "refresh", "Refresh"),
         # Shift+Q, not q: quitting is one keystroke from many others and a
@@ -1428,6 +1446,13 @@ class NfScope(App):
         log.highlight = True             # small task logs — highlight is fine
         log.clear()
         self._log_header(log, t)
+        scheme = remote_scheme(t.workdir)
+        if scheme:
+            self._tailer = None
+            log.write(f"(task log is in {scheme} object storage, not on this "
+                      f"filesystem — fetch it with e.g. "
+                      f"`aws s3 cp {t.workdir}/.command.log -`)")
+            return
         self._tailer = Follower(Path(t.workdir) / ".command.log") if t.workdir else None
         if self._tailer is None or not self._tailer.path.exists():
             log.write("(.command.log not written yet)")
@@ -1648,6 +1673,16 @@ class NfScope(App):
         self._files = []
         log = self.query_one("#log", RichLog)
         log.clear()
+        scheme = remote_scheme(t.workdir)
+        if scheme:
+            files.add_option(Option(f"({scheme}: not a local path)"))
+            log.write(f"This task's work dir is in object storage:\n  {t.workdir}\n\n"
+                      f"Everything read from a work dir — outputs, task logs, "
+                      f"resource metrics — needs the files locally. Fetch them "
+                      f"first, e.g.\n  aws s3 cp --recursive {t.workdir} ./task/\n\n"
+                      f"The task tree, statuses, exit codes and failure reports "
+                      f"come from .nextflow.log and work as usual.")
+            return
         wd = Path(t.workdir) if t.workdir else None
         if wd is None or not wd.exists():
             files.add_option(Option("(work dir not available)"))
@@ -2100,6 +2135,42 @@ class NfScope(App):
         # auto_scroll off lets you scroll back without new lines yanking you down.
         self.query_one("#log", RichLog).auto_scroll = self.follow
         self.notify(f"follow {'ON' if self.follow else 'OFF (scroll freely)'}")
+
+    def _copy(self, text: str, what: str) -> None:
+        """Put `text` on the clipboard by both routes available.
+
+        Textual's copy uses OSC 52, which is the only thing that reaches your
+        laptop's clipboard from a login node over SSH — but not every terminal
+        honours it. A local helper (pbcopy / wl-copy / xclip) covers the
+        terminals that don't, when one is running locally. The path is also
+        shown, so it is readable even where neither route lands.
+        """
+        try:
+            self.copy_to_clipboard(text)
+        except Exception:                          # noqa: BLE001
+            pass
+        for cmd in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"]):
+            if shutil.which(cmd[0]):
+                try:
+                    subprocess.run(cmd, input=text.encode(), timeout=5)
+                except Exception:                  # noqa: BLE001
+                    pass
+                break
+        self.notify(f"copied {what}:\n{text}")
+
+    def action_copy_path(self) -> None:
+        """`y` — copy what you're looking at: the selected output file's path in
+        the files view, otherwise the task's work directory."""
+        if self.view == "files":
+            _, p = self._current_file()
+            if p is not None:
+                self._copy(str(p), "file path")
+                return
+        t = self._selected() or self._files_task
+        if t is None or not t.workdir:
+            self.notify("no work directory for this selection", severity="warning")
+            return
+        self._copy(t.workdir, "work dir")
 
     def action_open_workdir(self) -> None:
         t = self._selected()
@@ -2678,6 +2749,9 @@ def run_report(log_file: Path, *, logs: str = "failed",
             "cached": t.cached,
             "attempts": t.attempts,
             "workdir": t.workdir or None,
+            # Cloud executors keep the work tree in object storage, so a reader
+            # knows why no logs or metrics are attached to this task.
+            "workdir_remote": remote_scheme(t.workdir),
             "failed": is_failed(t),
         }
         if m.has_data():

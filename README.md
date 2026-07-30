@@ -61,6 +61,12 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   data: progress, every task with its state and resource metrics, why each
   failure happened, and the `.command.*` files nested per task. Debugging a
   failed run needs neither a terminal nor a walk through the work tree.
+- **Cloud executors** — AWS Batch, Google Batch and Azure keep the work tree in
+  object storage, so the task tree, statuses, exit codes, progress and failure
+  reports all work (they come from `.nextflow.log`), while anything read out of
+  a work dir — outputs, task logs, metrics — cannot, because the files are not
+  on the machine. nf-tui says so and shows the `aws s3 cp` to fetch them,
+  rather than reporting them missing.
 - **Web mode** — the same UI in a browser via `nf-tui-web`, streamed with
   [textual-serve](https://github.com/Textualize/textual-serve). `F` loads a
   whole file in-pane there, since the browser has no terminal for `less`.
@@ -171,7 +177,8 @@ Notes for clusters:
 | Key | Action |
 |-----|--------|
 | `↑`/`↓`, `→`/`←` | move / expand in the task tree |
-| `/` | filter the tree by task name or hash — `Enter` keeps it, `esc` clears |
+| `/` | search — filters the task tree, or finds text in the log if that pane is focused |
+| `n` / `N` | next / previous log match |
 | `t` / `c` / `g` | task log / container log / full run log |
 | `d` | files view — `↑`/`↓` to pick, `Enter` to preview |
 | `s` | cycle sort — submission order → slowest → peak memory (heaviest process on top) |
@@ -183,6 +190,7 @@ Notes for clusters:
 | `z` / `m` | full-screen (maximize) the focused pane (`z`/`m`/`esc` to restore) |
 | `Tab` | cycle focus between panes |
 | `x` | show failed tasks only |
+| `y` | copy the path — the selected output file's, or the task's work dir |
 | `o` | open the task's work directory |
 | `esc` | step back (content → list → tree → run picker) |
 | `K` | stop the pipeline nf-tui launched (asks first; sends SIGTERM) |
