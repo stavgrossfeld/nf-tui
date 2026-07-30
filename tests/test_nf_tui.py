@@ -173,15 +173,22 @@ def test_find_work_root_honours_dash_w_and_banner(tmp_path):
     custom = tmp_path / "elsewhere"
     explicit = tmp_path / "a.log"
     explicit.write_text(f"  $> nextflow run main.nf -w {custom} -resume\n")
-    assert find_work_root(explicit) == custom
+    assert find_work_root(explicit) == str(custom)
 
     banner = tmp_path / "b.log"                        # nf-core prints this
     banner.write_text(f"  workDir                   : {custom}\n")
-    assert find_work_root(banner) == custom
+    assert find_work_root(banner) == str(custom)
 
     plain = tmp_path / "c.log"                         # default: <launch>/work
     plain.write_text("Jul-15 10:00:00.000 [main] DEBUG - nothing useful\n")
-    assert find_work_root(plain) == tmp_path / "work"
+    assert find_work_root(plain) == str(tmp_path / "work")
+
+    # A cloud root must come back verbatim: Path() would collapse the double
+    # slash to "s3:/bucket", which no client can fetch.
+    cloud = tmp_path / "cloud.log"
+    cloud.write_text("  $> nextflow run main.nf -profile awsbatch "
+                     "-w s3://my-bucket/work\n")
+    assert find_work_root(cloud) == "s3://my-bucket/work"
 
 
 def test_parse_submit_line(tmp_path):

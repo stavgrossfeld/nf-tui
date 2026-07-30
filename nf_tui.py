@@ -460,13 +460,16 @@ def error_summary(block: str) -> str:
     return lines[0] if lines else ""
 
 
-def find_work_root(log_file: Path) -> Path:
-    """Where this run's work/ tree lives.
+def find_work_root(log_file: Path) -> str:
+    """Where this run's work tree lives, as written — a path or an s3:// URI.
 
-    Cached (-resume) tasks are logged without a workDir, so we have to find the
-    tree ourselves: honour an explicit -w/-work-dir on the launch command, then
-    an nf-core style "workDir : <path>" banner line, else Nextflow's default of
-    <launch dir>/work.
+    Cached (-resume) tasks are logged without a workDir, so the tree has to be
+    found: an explicit -w/-work-dir on the launch command, then an nf-core style
+    "workDir : <path>" banner line, else Nextflow's default of <launch dir>/work.
+
+    Returned as a string rather than a Path because a cloud root must survive
+    intact: Path("s3://bucket/work") collapses the double slash to "s3:/bucket",
+    which is not a URI anything can fetch.
     """
     try:
         with log_file.open("r", errors="replace") as fh:
@@ -479,16 +482,19 @@ def find_work_root(log_file: Path) -> Path:
                         if flag in toks:
                             j = toks.index(flag)
                             if j + 1 < len(toks):
-                                return Path(toks[j + 1]).expanduser()
+                                val = toks[j + 1]
+                                return (val if remote_scheme(val)
+                                        else str(Path(val).expanduser()))
                 else:
-                    # nf-core prints a banner line: "workDir : /abs/path".
-                    # Anchored so a timestamped DEBUG line can't be misread.
-                    b = re.match(r"\s*workDir\s*:\s*(/\S+)", _strip_ansi(line))
-                    if b:
-                        return Path(b.group(1))
+                    # nf-core prints a banner line: "workDir : /abs/path" (or an
+                    # s3:// URI when the run is on Batch).
+                    b = re.match(r"\s*workDir\s*:\s*(\S+)", _strip_ansi(line))
+                    if b and (b.group(1).startswith("/")
+                              or remote_scheme(b.group(1))):
+                        return b.group(1)
     except OSError:
         pass
-    return log_file.parent / "work"
+    return str(log_file.parent / "work")
 
 
 def index_workdirs(work_root: Path) -> dict[str, str]:
@@ -540,7 +546,10 @@ def _fill_cached_workdirs(log_file: Path, tasks: list[Task]) -> None:
     need = [t for t in tasks if t.cached and not t.workdir and t.hash != "-"]
     if not need:
         return
-    index = index_workdirs(find_work_root(log_file))
+    root = find_work_root(log_file)
+    if remote_scheme(root):
+        return              # an object store has no local tree to scan
+    index = index_workdirs(Path(root))
     if not index:
         return
     for t in need:
@@ -1653,7 +1662,10 @@ class NfScope(App):
         if not inflight:
             return
         if self._work_root is None and self.log_file is not None:
-            self._work_root = find_work_root(self.log_file)
+            root = find_work_root(self.log_file)
+            # Resolving by hash means listing a directory; skip it for a cloud
+            # work tree, where that would be an API call per task per refresh.
+            self._work_root = None if remote_scheme(root) else Path(root)
         if self._work_root is None:
             return
         for t in inflight:
@@ -2897,9 +2909,11 @@ def run_report(log_file: Path, *, logs: str = "failed",
     # when the task completes — so resolve it by hash first. Without this every
     # executing task reports as "pending", since there is no .command.begin to
     # look for and no work dir to look in.
+    local_root = None if remote_scheme(work_root) else Path(work_root)
     for t in tasks:
-        if not t.workdir and t.status.upper() in IN_FLIGHT:
-            found = resolve_workdir(work_root, t.hash)
+        if local_root is not None and not t.workdir \
+                and t.status.upper() in IN_FLIGHT:
+            found = resolve_workdir(local_root, t.hash)
             if found:
                 t.workdir = found
     prog = progress_of(tasks, check_fs=True)
