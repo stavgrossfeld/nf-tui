@@ -218,6 +218,11 @@ Notes for clusters:
 
 ## How it works
 
+For a tour of the code — where a work directory comes from, what each function
+does, and which Nextflow formats are load-bearing — see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+
 nf-tui parses `.nextflow.log` for each task's hash, status, exit code, and work
 directory — so it works on any completed or in-progress run without a plugin.
 It reads both the `TaskHandler[...]` lines (any executor: the class name always
