@@ -74,7 +74,7 @@ _RUNTYPE_RE = re.compile(
 _HANDLER_RE = re.compile(
     r"TaskHandler\[id: (?P<id>\d+); name: (?P<name>.+?); "
     r"status: (?P<status>\w+); exit: (?P<exit>[^;]+); "
-    r"error: (?P<error>[^;]+); workDir: (?P<workdir>[^\]]+)\]"
+    r"error: (?P<error>[^;]+); workDir: (?P<workdir>[^;\]]+)"
 )
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # The container invocation inside .command.run, wherever it appears on the line.

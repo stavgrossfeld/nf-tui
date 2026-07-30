@@ -128,6 +128,33 @@ def test_parses_grid_executor_handler_lines(tmp_path):
     assert tasks[0].hash == "cd/ef1234" and tasks[0].status == "COMPLETED"
 
 
+def test_grid_handler_appends_fields_after_workdir(tmp_path):
+    """On a scheduler, workDir is not the last field.
+
+    GridTaskHandler.toStringBuilder calls its parent first and then appends
+    "; started: ...; exited: ..." (checked in Nextflow's bytecode), so a line
+    from SLURM/PBS carries extra fields after the work dir. Reading to the
+    closing bracket swallowed them into the path:
+
+        /scratch/work/ab/cdef123; started: 1721000000000; exited: 1721000012000
+
+    The task still appeared in the tree — the short hash survives by accident —
+    but the directory did not exist, so its logs, output files, resource metrics
+    and container decode were all unavailable on every cluster run.
+    """
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "Jul-14 10:38:12.345 [Task monitor] DEBUG n.executor.GridTaskHandler - "
+        "Task completed > GridTaskHandler[id: 4; name: ALIGN (s1); "
+        "status: COMPLETED; exit: 0; error: -; "
+        "workDir: /scratch/work/ab/cdef1234567890; "
+        "started: 1721000000000; exited: 1721000012000]\n")
+    t = parse_log(log)[0]
+    assert t.workdir == "/scratch/work/ab/cdef1234567890"
+    assert t.hash == "ab/cdef12"
+    assert t.exit == "0" and t.status == "COMPLETED"
+
+
 def test_cached_tasks_get_their_workdir_resolved(tmp_path):
     # Cached lines carry no workDir, but the dirs survive from the earlier run —
     # resolving them is what makes a resumed task's logs and files viewable.

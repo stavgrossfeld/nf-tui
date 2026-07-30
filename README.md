@@ -16,8 +16,13 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   which is usually what you're looking for when hunting an OOM.
 - **Works with `-resume`** — cached tasks are shown (`⟲`) with their work dirs
   resolved, so a resumed run's logs, outputs and metrics stay browsable. Retries
-  (`errorStrategy 'retry'`) and `storeDir` tasks are shown too, and every
-  executor is supported (local, SLURM/PBS via `GridTaskHandler`, k8s, AWS Batch).
+  (`errorStrategy 'retry'`) and `storeDir` tasks are shown too.
+- **Every executor** — local, SLURM/PBS, k8s and AWS Batch all name their task
+  handler `*TaskHandler`, which is what the parser keys on, and the grid form
+  (which appends `started:`/`exited:` after the work dir) is handled. Parsing
+  and container command construction are covered by tests built from
+  Nextflow's own formats; they have not yet been exercised against a live
+  scheduler, so reports from a real cluster are welcome.
 - **Resource metrics** — each finished task shows its duration and peak memory
   (from `.command.trace`); `s` sorts to float the slowest / hungriest process
   to the top, so the bottleneck is one keypress away.
@@ -151,10 +156,11 @@ ssh -L 8000:localhost:8000 you@login-node
 
 Notes for clusters:
 
-- **Singularity / Apptainer** are supported — nf-tui reuses each task's own
-  container invocation from `.command.run` (image + binds), so BAM/CRAM viewing
-  works with whatever engine the pipeline used. The TUI itself needs no
-  container engine; only viewing BAM/CRAM does.
+- **Singularity / Apptainer** — nf-tui reuses each task's own container
+  invocation from `.command.run` (image + binds), including the environment
+  prefix Nextflow puts in front of it, so BAM/CRAM viewing works with whatever
+  engine the pipeline used. The TUI itself needs no container engine; only
+  viewing BAM/CRAM does.
 - **Shared filesystems** (Lustre/GPFS/NFS) cache file metadata, so live updates
   may lag a few seconds behind the pipeline — that's the filesystem, not nf-tui.
 - **`L` (external `less`)** works in the terminal, not the browser; use the
