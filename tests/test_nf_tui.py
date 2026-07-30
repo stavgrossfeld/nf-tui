@@ -1699,7 +1699,125 @@ def test_cloud_work_dirs_are_explained_not_just_missing(tmp_path):
         await pilot.press("t")
         await pilot.pause()
         shown = text(app.query_one("#log", RichLog))
-        assert "object storage" in shown and "aws s3 cp" in shown
+        # Names the scheme and the CLI to install, rather than reporting the
+        # log missing as though the task had produced nothing.
+        assert "object storage" in shown and "aws" in shown
+        return True
+
+    import shutil as _shutil
+    if _shutil.which("aws") is None:
+        assert drive(NfScope(log), steps)
+
+
+# A stand-in for the aws CLI that serves s3:// out of a local directory. Without
+# it none of the object-store path is covered, since testing it otherwise needs
+# an AWS account.
+AWS_SHIM = """#!/usr/bin/env python3
+import os, sys
+root = os.environ["FAKE_S3_ROOT"]
+
+def local(uri):
+    return os.path.join(root, uri.replace("s3://", "", 1))
+
+args = sys.argv[1:]
+if args[:2] == ["s3", "cp"]:
+    path = local(args[2])
+    if not os.path.isfile(path):
+        sys.exit(1)
+    sys.stdout.write(open(path).read())
+elif args[:2] == ["s3", "ls"]:
+    path = local(args[2].rstrip("/"))
+    if not os.path.isdir(path):
+        sys.exit(1)
+    for name in sorted(os.listdir(path)):
+        full = os.path.join(path, name)
+        if os.path.isdir(full):
+            print("                           PRE " + name + "/")
+        else:
+            print("2026-01-01 00:00:00 %10d %s" % (os.path.getsize(full), name))
+else:
+    sys.exit(2)
+"""
+
+
+def test_cloud_task_logs_and_files_are_fetched(tmp_path, monkeypatch):
+    """With the CLI present, a cloud task's log and outputs are read directly.
+
+    Run against the shim above, so the fetch, the worker hand-off and the render
+    are all exercised without an AWS account.
+    """
+    import nf_tui as m
+
+    bucket = tmp_path / "bucket"
+    task = bucket / "work" / "ab" / "cdef1234567890"
+    task.mkdir(parents=True)
+    (task / ".command.log").write_text("aligning reads\ndone\n")
+    (task / "out.bam").write_text("BAMDATA\n")
+
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    shim = shim_dir / "aws"
+    shim.write_text(AWS_SHIM)
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("FAKE_S3_ROOT", str(bucket))
+    m._remote_cache.clear()
+
+    uri = "s3://work/ab/cdef1234567890"
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "x DEBUG - Task completed > AwsBatchTaskHandler[id: 1; name: ALIGN (s1); "
+        "status: COMPLETED; exit: 0; error: -; workDir: " + uri + "]\n")
+
+    # the plumbing on its own
+    assert m.remote_tool("s3") is not None
+    assert "aligning reads" in m.remote_cat(uri + "/.command.log")
+    assert ("out.bam", 8) in m.remote_ls(uri)
+
+    def pane_text(pane):
+        return "\n".join("".join(s.text for s in strip) for strip in pane.lines)
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        await pilot.press("t")                       # task log, fetched
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "aligning reads" in pane_text(app.query_one("#log", RichLog))
+
+        await pilot.press("d")                       # outputs, listed
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert any(u.endswith("out.bam") for u in app._remote_files)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "BAMDATA" in pane_text(app.query_one("#log", RichLog))
         return True
 
     assert drive(NfScope(log), steps)
+
+
+def test_remote_cache_can_be_invalidated(tmp_path, monkeypatch):
+    """A running task's log grows, so a cached copy must be droppable."""
+    import nf_tui as m
+    bucket = tmp_path / "bucket"
+    task = bucket / "work" / "cd" / "ef01"
+    task.mkdir(parents=True)
+    (task / ".command.log").write_text("first\n")
+
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    (shim_dir / "aws").write_text(AWS_SHIM)
+    (shim_dir / "aws").chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("FAKE_S3_ROOT", str(bucket))
+    m._remote_cache.clear()
+
+    uri = "s3://work/cd/ef01/.command.log"
+    assert m.remote_cat(uri).strip() == "first"
+    (task / ".command.log").write_text("first\nsecond\n")
+    assert m.remote_cat(uri).strip() == "first"        # served from cache
+    m.remote_forget(uri)
+    assert "second" in m.remote_cat(uri)               # re-read
+

@@ -61,12 +61,13 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   data: progress, every task with its state and resource metrics, why each
   failure happened, and the `.command.*` files nested per task. Debugging a
   failed run needs neither a terminal nor a walk through the work tree.
-- **Cloud executors** — AWS Batch, Google Batch and Azure keep the work tree in
-  object storage, so the task tree, statuses, exit codes, progress and failure
-  reports all work (they come from `.nextflow.log`), while anything read out of
-  a work dir — outputs, task logs, metrics — cannot, because the files are not
-  on the machine. nf-tui says so and shows the `aws s3 cp` to fetch them,
-  rather than reporting them missing.
+- **Cloud executors (AWS Batch, Google Batch)** — the work tree lives in object
+  storage, and nf-tui reads it there: select a task and it fetches that task's
+  log and lists its outputs through your own `aws` / `gcloud` CLI, so a cloud
+  run is as browsable as a local one. No SDK is added; fetches are for the
+  selected task only, in the background, and cached. Everything from
+  `.nextflow.log` — tasks, statuses, exit codes, progress, failure reports —
+  needs no cloud access at all.
 - **Web mode** — the same UI in a browser via `nf-tui-web`, streamed with
   [textual-serve](https://github.com/Textualize/textual-serve). `F` loads a
   whole file in-pane there, since the browser has no terminal for `less`.
@@ -159,6 +160,25 @@ nf-tui-web /scratch/$USER/my-run --host 127.0.0.1 --port 8000
 ssh -L 8000:localhost:8000 you@login-node
 #   then open http://localhost:8000
 ```
+
+### Running on AWS without Seqera Platform
+
+Launching on AWS is plain Nextflow — set a Batch queue and an S3 work dir in
+config and run it; the Platform is optional. nf-tui then watches that run from
+wherever Nextflow is running (your laptop, or a small EC2 box):
+
+```bash
+nf-tui nextflow run main.nf -profile awsbatch -w s3://my-bucket/work
+```
+
+Task states, progress, throughput and failure reports come from the local
+`.nextflow.log`. Per-task logs and outputs are pulled from S3 on demand via your
+configured `aws` CLI, so nothing extra needs installing or authenticating.
+
+One thing that stays local-only: telling *running* from *queued* uses
+`.command.begin` in each work dir, and probing that per task over S3 on every
+refresh would be far too slow — cloud tasks in flight are reported together
+rather than split.
 
 Notes for clusters:
 

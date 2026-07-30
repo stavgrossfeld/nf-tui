@@ -129,6 +129,84 @@ def remote_scheme(workdir: str) -> str | None:
     return m.group(1).lower() if m else None
 
 
+# Reading an object store goes through its own CLI rather than a Python SDK:
+# anyone running Nextflow on AWS Batch already has `aws` configured, and this
+# keeps nf-tui dependency-free. Fetches are for the selected task only, run in a
+# worker thread, and cached — a call costs hundreds of milliseconds, so none of
+# this may touch the 1s refresh path.
+REMOTE_TOOLS = {
+    "s3": {"bin": "aws",
+           "cat": ["aws", "s3", "cp", "{uri}", "-"],
+           "ls": ["aws", "s3", "ls", "{uri}/"]},
+    "gs": {"bin": "gcloud",
+           "cat": ["gcloud", "storage", "cat", "{uri}"],
+           "ls": ["gcloud", "storage", "ls", "{uri}/"]},
+}
+REMOTE_TIMEOUT = 30
+_remote_cache: dict[tuple[str, str], object] = {}
+
+
+def remote_tool(scheme: str | None) -> dict | None:
+    """The CLI for this scheme, if it is installed."""
+    spec = REMOTE_TOOLS.get(scheme or "")
+    return spec if spec and shutil.which(spec["bin"]) else None
+
+
+def _run_remote(argv: list[str], uri: str) -> str | None:
+    cmd = [a.replace("{uri}", uri) for a in argv]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=REMOTE_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def remote_cat(uri: str, limit: int = 20_000) -> str | None:
+    """Object contents as text, or None if absent or unreadable."""
+    key = ("cat", uri)
+    if key in _remote_cache:
+        got = _remote_cache[key]
+        return got[-limit:] if isinstance(got, str) else None
+    spec = remote_tool(remote_scheme(uri))
+    if spec is None:
+        return None
+    out = _run_remote(spec["cat"], uri)
+    _remote_cache[key] = out if out is not None else 0
+    return None if out is None else out[-limit:]
+
+
+def remote_ls(uri: str) -> list[tuple[str, int | None]]:
+    """(name, size) for the objects directly under a prefix."""
+    key = ("ls", uri)
+    if key in _remote_cache:
+        got = _remote_cache[key]
+        return got if isinstance(got, list) else []
+    spec = remote_tool(remote_scheme(uri))
+    if spec is None:
+        return []
+    out = _run_remote(spec["ls"], uri)
+    entries: list[tuple[str, int | None]] = []
+    for line in (out or "").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "PRE":                          # aws: a sub-prefix
+            entries.append((parts[1].rstrip("/") + "/", None))
+        elif len(parts) >= 4 and parts[2].isdigit():   # aws: date time size name
+            entries.append((" ".join(parts[3:]), int(parts[2])))
+        elif line.startswith(("s3://", "gs://")):      # gcloud: bare URIs
+            entries.append((line.rsplit("/", 1)[-1] or line, None))
+    _remote_cache[key] = entries
+    return entries
+
+
+def remote_forget(prefix: str) -> None:
+    """Drop cached reads under a prefix, so a live task's log can be re-read."""
+    for key in [k for k in _remote_cache if k[1].startswith(prefix)]:
+        del _remote_cache[key]
+
+
 def _short_hash(workdir: str) -> str:
     """/…/work/bf/4071830843d52… -> 'bf/407183' (matches console output)."""
     p = Path(workdir)
@@ -1043,6 +1121,7 @@ class NfScope(App):
         self._task_nodes: dict = {}      # task hash -> TreeNode
         self._files: list[Path] = []     # entries backing the #files list
         self._files_task: Task | None = None  # task whose dir backs #files
+        self._remote_files: list[str] = []    # object URIs, when the dir is remote
         self._last_file: Path | None = None  # last previewed file (for F = full)
         self._tool_image_cache: dict = {}  # binary -> image that provides it
         # task hash -> (status when read, metrics); see _metrics for why misses cache
@@ -1448,10 +1527,14 @@ class NfScope(App):
         self._log_header(log, t)
         scheme = remote_scheme(t.workdir)
         if scheme:
-            self._tailer = None
-            log.write(f"(task log is in {scheme} object storage, not on this "
-                      f"filesystem — fetch it with e.g. "
-                      f"`aws s3 cp {t.workdir}/.command.log -`)")
+            self._tailer = None                    # nothing local to tail
+            if remote_tool(scheme) is None:
+                spec = REMOTE_TOOLS.get(scheme, {})
+                log.write(f"(task log is in {scheme} object storage; install "
+                          f"`{spec.get('bin', scheme)}` and nf-tui will fetch it)")
+                return
+            log.write(f"… fetching {t.workdir}/.command.log …")
+            self._fetch_remote_log(t.workdir, self.view)
             return
         self._tailer = Follower(Path(t.workdir) / ".command.log") if t.workdir else None
         if self._tailer is None or not self._tailer.path.exists():
@@ -1471,6 +1554,86 @@ class NfScope(App):
         if show_error:
             # Land on the error, not wherever the previous content sat.
             self.call_after_refresh(lambda: log.scroll_home(animate=False))
+
+    # ---- object-store work dirs (AWS Batch and friends) --------------------
+
+    @work(thread=True, exclusive=True, group="remote")
+    def _fetch_remote_log(self, workdir: str, view: str) -> None:
+        """Pull a cloud task's log in the background and paint it."""
+        name = ".command.log"
+        # A live task's log grows, so don't serve a stale copy of it.
+        remote_forget(f"{workdir}/{name}")
+        body = remote_cat(f"{workdir}/{name}")
+        if body is None:                       # not written yet, or unreadable
+            body = remote_cat(f"{workdir}/.command.err") or ""
+        self.call_from_thread(self._paint_remote_log, workdir, view, body)
+
+    def _paint_remote_log(self, workdir: str, view: str, body: str) -> None:
+        # The selection or the view may have moved on while we were fetching.
+        t = self._selected()
+        if self.view != view or t is None or t.workdir != workdir:
+            return
+        panes = self.query("#log")
+        if not panes:
+            return
+        log = panes.first(RichLog)
+        log.auto_scroll = False
+        log.clear()
+        self._log_header(log, t)
+        if body.strip():
+            self._emit_view(log, body)
+        else:
+            log.write("(no output in the object store yet)")
+
+    @work(thread=True, exclusive=True, group="remote-files")
+    def _fetch_remote_files(self, workdir: str) -> None:
+        remote_forget(f"{workdir}/")
+        self.call_from_thread(self._paint_remote_files, workdir,
+                              remote_ls(workdir))
+
+    def _paint_remote_files(self, workdir: str,
+                            entries: list[tuple[str, int | None]]) -> None:
+        if self.view != "files" or (self._files_task or Task()).workdir != workdir:
+            return
+        files = self.query_one("#files", OptionList)
+        files.clear_options()
+        self._files = []                       # these are URIs, not local paths
+        self._remote_files = [f"{workdir}/{n}" for n, _ in entries
+                              if not n.endswith("/")]
+        shown = [(n, sz) for n, sz in entries if not n.startswith(".")]
+        if not shown:
+            files.add_option(Option("(nothing listed)"))
+            return
+        for i, (name, size) in enumerate(shown):
+            label = f"   {name}   {human_size(size) if size else ''}"
+            files.add_option(Option(label, id=f"r{i}"))
+        self._remote_files = [f"{workdir}/{n}" for n, _ in shown]
+        files.highlighted = 0
+        self._open_remote_file(self._remote_files[0])
+
+    def _open_remote_file(self, uri: str) -> None:
+        self._viewer_header = [f"── {uri.rsplit('/', 1)[-1]} ──", uri,
+                               f"$ {REMOTE_TOOLS[remote_scheme(uri)]['bin']} "
+                               f"cat   (object store)"]
+        panes = self.query("#log")
+        if panes:
+            log = panes.first(RichLog)
+            log.clear()
+            for h in self._viewer_header:
+                log.write(h)
+            log.write("… fetching …")
+        self._fetch_remote_object(uri)
+
+    @work(thread=True, exclusive=True, group="remote-object")
+    def _fetch_remote_object(self, uri: str) -> None:
+        body = remote_cat(uri, limit=VIEW_MAX_LINES * 200)
+        lines = (body or "").splitlines()[:VIEW_MAX_LINES]
+        if body is None:
+            lines = ["(could not read this object — check credentials "
+                     "and that it exists)"]
+        elif not lines:
+            lines = ["(empty)"]
+        self.call_from_thread(self._viewer_done, lines, VIEW_MAX_LINES, None)
 
     def _run_is_live(self) -> bool:
         """A run is live if a task is still running/submitted, or its log was
@@ -1675,13 +1838,19 @@ class NfScope(App):
         log.clear()
         scheme = remote_scheme(t.workdir)
         if scheme:
-            files.add_option(Option(f"({scheme}: not a local path)"))
-            log.write(f"This task's work dir is in object storage:\n  {t.workdir}\n\n"
-                      f"Everything read from a work dir — outputs, task logs, "
-                      f"resource metrics — needs the files locally. Fetch them "
-                      f"first, e.g.\n  aws s3 cp --recursive {t.workdir} ./task/\n\n"
-                      f"The task tree, statuses, exit codes and failure reports "
-                      f"come from .nextflow.log and work as usual.")
+            if remote_tool(scheme) is None:
+                spec = REMOTE_TOOLS.get(scheme, {})
+                files.add_option(Option(f"({scheme}: install "
+                                        f"{spec.get('bin', scheme)})"))
+                log.write(f"This task's work dir is in object storage:\n"
+                          f"  {t.workdir}\n\n"
+                          f"Install `{spec.get('bin', scheme)}` and nf-tui will "
+                          f"list and read it directly. Otherwise fetch it "
+                          f"yourself:\n  aws s3 cp --recursive {t.workdir} ./task/")
+                return
+            files.add_option(Option("… listing …"))
+            log.write(f"… listing {t.workdir} …")
+            self._fetch_remote_files(t.workdir)
             return
         wd = Path(t.workdir) if t.workdir else None
         if wd is None or not wd.exists():
@@ -2047,6 +2216,11 @@ class NfScope(App):
         if event.option_list.id != "files":
             return
         idx = event.option.id
+        if idx and idx.startswith("r"):             # a remote entry
+            n = int(idx[1:])
+            if n < len(self._remote_files):
+                self._open_remote_file(self._remote_files[n])
+            return
         if idx is not None and idx.isdigit() and int(idx) < len(self._files):
             self._open_file(self._files[int(idx)])
 
