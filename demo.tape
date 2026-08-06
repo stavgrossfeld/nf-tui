@@ -28,7 +28,7 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
 
 Hide
-Type "export PATH=$HOME/.local/bin:$PATH; cd ~/scratch/demo_sarek; clear"
+Type "export PATH=$HOME/.local/bin:$PATH; cd ~/scratch/demo_sarek; docker run --rm $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 samtools) true >/dev/null 2>&1; clear"
 Enter
 Sleep 2s
 Show
@@ -49,7 +49,11 @@ Type "e"
 Sleep 3s
 
 # ── One task in detail: mark duplicates ────────────────────────────────────
-Type "/markdup"
+# The filter matches the whole process path, so "markdup" also catches
+# SAMTOOLS_STATS and MOSDEPTH (both sit under BAM_MARKDUPLICATES) — three
+# groups, and one Down then lands on a group header rather than a task, which
+# shows an empty file list. "gatk4_markdup" matches exactly one.
+Type "/gatk4_markdup"
 Sleep 1200ms
 Enter
 Sleep 600ms
@@ -72,7 +76,10 @@ Sleep 900ms
 Down
 Sleep 1s
 Enter
-Sleep 3500ms
+# Generous on purpose: this is a real `docker run` + samtools decode, and a
+# cold start under vhs's render load takes several seconds. Overshooting costs
+# nothing now — cap_still_runs squeezes whatever is left standing still.
+Sleep 9s
 
 # ── The run log: opens at the tail, pages back and keeps loading ───────────
 Type "g"
