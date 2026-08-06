@@ -1,22 +1,23 @@
-# nf-tui demo — nf-core/sarek launched and watched from the very beginning.
+# nf-tui demo — launch a pipeline, then actually debug it.
 #
-# The pipeline is started from the prompt and the recording watches it submit
-# its first tasks and fill in, at the speed it really happens. The one exception
-# is Nextflow's own startup — about half a minute before it submits anything —
-# which is run fast rather than cut, so you still see the run log streaming
-# config and plugin loading without waiting through it.
+# Resumed on purpose. A fresh sarek run takes minutes to reach the interesting
+# tasks, and the alternative is a gif that spends most of itself waiting. With
+# -resume the whole tree is there at once, which is also the routine case: you
+# are usually looking at a run that has already been somewhere.
+#
+# The beats are the things you actually do when something breaks: jump to the
+# failure and read why, then open one task — its task log, its container log,
+# its outputs, and a BAM decoded through that task's own container.
+#
+# Every beat changes the screen. A still pane is dead air, and smooth_retime
+# squeezes it out, so "sleep and admire" does not survive into the cut.
 #
 # Render with:
 #   vhs demo.tape
-#   python smooth_retime.py demo_raw.gif demo.gif
+#   REAL_SECS=<tape wall time> WIDTH=1100 MAX_HOLD=1.2 \
+#     python smooth_retime.py demo_raw.gif demo.gif
 #
-# smooth_retime corrects vhs's dropped-frame timing, finds where the first task
-# appears (so the boot window needs no tuning), runs the boot fast, and eases
-# back to real time over a couple of seconds rather than cutting. It also caps
-# how long any one frame may sit, so a still stretch never reads as the clip
-# freezing (the previous cut held one frame for nine seconds).
-#
-# Expects docker running and the nf-core/sarek test data reachable.
+# Expects docker running and a previous run in ~/scratch/demo_sarek to resume.
 
 Output demo_raw.gif
 Set FontSize 16
@@ -27,60 +28,57 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
 
 Hide
-Type "export PATH=$HOME/.local/bin:$PATH; rm -rf ~/scratch/demo_sarek; mkdir -p ~/scratch/demo_sarek; cd ~/scratch/demo_sarek; clear"
+Type "export PATH=$HOME/.local/bin:$PATH; cd ~/scratch/demo_sarek; clear"
 Enter
 Sleep 2s
 Show
 
 # ── Prefix any nextflow command to launch it and watch it ──────────────────
-Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out"
+Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out -resume"
 Sleep 800ms
 Enter
 
-# Nextflow boots: the tree is empty and the run log streams its startup.
-# smooth_retime runs everything up to the first task at 14x, so this wait costs
-# the viewer a couple of seconds rather than the minute it really takes.
-Sleep 30s
+# Nextflow starts and the tree fills in. smooth_retime runs everything up to
+# the first task at 14x, so this costs the viewer a moment, not the real wait.
+Sleep 26s
 
-# ── The first tasks appear and start completing ────────────────────────────
-Sleep 20s
+# ── What broke, and why ────────────────────────────────────────────────────
+# e jumps to the next failed task and leads with Nextflow's own error report:
+# the cause, the exit status, and the .command.sh that ran.
+Type "e"
+Sleep 3s
 
-# ── Straight into them: step down the tree, then open a finished task's files
-# No passive staring from here on. A still screen is dead air the retimer will
-# squeeze out anyway, so every beat below changes something.
-Down
+# ── One task in detail: mark duplicates ────────────────────────────────────
+Type "/markdup"
+Sleep 1200ms
+Enter
 Sleep 600ms
 Down
-Sleep 600ms
-Down
-Sleep 600ms
-Down
-Sleep 800ms
+Sleep 900ms
 
+# its task output (.command.log, with container noise filtered out)
+Type "t"
+Sleep 2200ms
+
+# the raw container log behind it
+Type "c"
+Sleep 1600ms
+
+# ── Its outputs — and the BAM read through its own container ───────────────
 Type "d"
 Sleep 1400ms
-
-# Arrow the file list — each move repaints the preview beside it.
 Down
-Sleep 1100ms
+Sleep 900ms
 Down
-Sleep 1100ms
-Down
-Sleep 1100ms
+Sleep 1s
 Enter
-Sleep 1800ms
+Sleep 3500ms
 
-# ── What is running right now ──────────────────────────────────────────────
-Type "p"
-Sleep 2500ms
-Escape
-Sleep 800ms
-
-# ── The run log opens at the tail; page back and it keeps loading ──────────
+# ── The run log: opens at the tail, pages back and keeps loading ───────────
 Type "g"
-Sleep 1500ms
+Sleep 1400ms
 Type "bbbb"
-Sleep 2500ms
+Sleep 2200ms
 
 Type "Q"
-Sleep 2s
+Sleep 1500ms
