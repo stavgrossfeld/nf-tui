@@ -28,19 +28,21 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
 
 Hide
-Type "export PATH=$HOME/.local/bin:$PATH; cd ~/scratch/demo_sarek; docker run --rm $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 samtools) true >/dev/null 2>&1; clear"
+Type "export PATH=$HOME/.local/bin:$PATH; rm -rf ~/scratch/demo_sarek; mkdir -p ~/scratch/demo_sarek; cd ~/scratch/demo_sarek; docker run --rm $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 samtools) true >/dev/null 2>&1; clear"
 Enter
 Sleep 2s
 Show
 
 # ── Prefix any nextflow command to launch it and watch it live ────────────
-Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out -resume"
+Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out"
 Sleep 800ms
 Enter
 
-# The run starts and the tree fills in. smooth_retime runs everything up to the
-# first task at 14x, so this costs a moment rather than the real wait.
-Sleep 30s
+# A genuinely fresh run — nothing cached, so every task is really executing and
+# the tree fills with ✓ COMPLETED and real durations rather than ⟲ CACHED.
+# That takes a few minutes, which is what OPEN_UNTIL is for: smooth_retime runs
+# this whole stretch at 14x, so the viewer watches it fill in seconds.
+Sleep 210s
 
 # ── Scroll the tree ────────────────────────────────────────────────────────
 # One key at a time with a gap: `Down 4` sends four presses back to back and
