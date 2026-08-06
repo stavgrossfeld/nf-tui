@@ -39,10 +39,11 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 - **Output files** — browse a task's work-dir files with sizes; preview text
   and gzip on the host, and **BAM / CRAM / BCF decoded with `samtools` /
   `bcftools` from the task's own container** (reusing its mounts, so the
-  reference genome resolves). The preview **grows as you scroll**: reaching the
-  bottom pulls in the next chunk, so a multi-gigabyte output opens instantly and
-  keeps going, rather than the pane deciding up front how much to load. Press
-  `L` to open any file in `less`.
+  reference genome resolves). Every preview **grows as you scroll** — text, gzip
+  and container-decoded BAM/CRAM alike: reaching the bottom pulls in the next
+  chunk, so a multi-gigabyte output opens instantly and keeps going rather than
+  the pane deciding up front how much to load. Press `L` to open any file in
+  `less`.
 - **Live progress** — the header tracks `done/total (%)`, and while a pipeline
   runs it adds what's in flight, throughput, and an ETA for the queued work:
   `15/20 seen (75%) · 5 running · 41.8/min · ~7.2s for queued`. Mid-run totals

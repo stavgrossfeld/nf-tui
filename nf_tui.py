@@ -885,12 +885,21 @@ def decode_tool(path: Path) -> str | None:
     return None
 
 
-def head_gzip(path: Path, lines: int) -> list[str]:
+def head_gzip(path: Path, lines: int, skip: int = 0) -> list[str]:
+    """`lines` lines from a gzip file, starting after `skip` of them.
+
+    A deflate stream has no seekable line offset, so resuming means
+    decompressing from the start again — but it is *streamed*, so memory stays
+    at one line whatever the file's size. That trade is what lets a gzipped
+    output keep loading as you scroll instead of stopping at a cap.
+    """
     try:
         with gzip.open(path, "rt", errors="replace") as f:
             out = []
             for i, line in enumerate(f):
-                if i >= lines:
+                if i < skip:
+                    continue
+                if len(out) >= lines:
                     break
                 out.append(line.rstrip("\n"))
             return out
@@ -1335,6 +1344,7 @@ class NfScope(App):
         self._view_path: Path | None = None
         self._view_pos: int | None = None
         self._view_eof: bool = True
+        self._view_shown: int | None = None   # lines shown, for pipe-based files
         self._extending = False
         # Task-log counterpart of the run log's backfill state. That pane shows
         # a *filtered* view of .command.log, so the raw lines are kept in order
@@ -2034,7 +2044,19 @@ class NfScope(App):
         if self.view != "files" or self._extending:
             return
         p, pos = self._view_path, self._view_pos
-        if p is None or pos is None or self._view_eof:
+        if p is None or self._view_eof:
+            return
+        if pos is None:
+            # gzip / container decode: a pipe, so resume by line count. The
+            # worker re-runs the decoder with the lines already shown skipped
+            # and appends what comes back; _viewer_done clears _extending.
+            shown = self._view_shown
+            t = self._files_task or self._selected()
+            if shown is None or t is None:
+                return
+            self._extending = True
+            self._run_viewer(t, p, decode_tool(p), is_gzip(p),
+                             skip=shown, append=True)
             return
         self._extending = True
         try:
@@ -2170,6 +2192,7 @@ class NfScope(App):
         self._last_file = p
         # Drop any previous file's resume point until this one reports its own.
         self._view_path, self._view_pos, self._view_eof = None, None, True
+        self._view_shown, self._extending = None, False
         # The files belong to the task whose dir we listed; prefer it. The tree
         # cursor (_selected) can be off a task leaf (e.g. on a process group),
         # which used to hand a None task to the container decode below.
@@ -2228,18 +2251,24 @@ class NfScope(App):
 
     @work(thread=True, exclusive=True)
     def _run_viewer(self, t: Task, p: Path, tool: str | None, gz: bool,
-                    full: bool = False) -> None:
+                    full: bool = False, skip: int = 0,
+                    append: bool = False) -> None:
+        """Render `p` into the pane. `skip` starts that many lines in and
+        `append` adds to what is already there — together they are how a gzip
+        or container-decoded file keeps loading as you scroll, since neither
+        can be resumed from a byte offset the way plain text can."""
         text_cap = FULL_MAX_LINES if full else VIEW_MAX_LINES
         bam_cap = FULL_MAX_LINES if full else BAM_PREVIEW_LINES
         # Text and gzip are read directly on the host — fast, no container.
         if tool is None:
             if gz:
-                # A gzip stream can't be resumed from a byte offset without
-                # decompressing from the start again, so this one stays capped.
-                out = head_gzip(p, text_cap)
+                out = head_gzip(p, text_cap, skip)
                 self.call_from_thread(self._viewer_done, out or ["(empty)"],
-                                      text_cap, p)
+                                      text_cap, p, None, len(out) < text_cap,
+                                      skip + len(out), append)
                 return
+            # Plain text resumes by byte offset instead (see _preview_extend),
+            # so it never needs the line-skip path.
             pos, out, at_eof = read_forward(p, 0, text_cap)
             self.call_from_thread(self._viewer_done, out or ["(empty)"], text_cap,
                                   p, pos, at_eof)
@@ -2254,8 +2283,13 @@ class NfScope(App):
         engine, mounts, image = spec
         # cd into the task work dir so relative references (e.g. a CRAM's
         # -T genome.fasta) resolve exactly as they did for the task.
+        # `tail -n +N` starts N lines in: the decode itself is a pipe, so this
+        # re-decodes from the start each time. Bounded memory, and it is what
+        # lets a BAM keep scrolling instead of stopping at the first 500 lines.
+        window = (f"tail -n +{skip + 1} | head -n {bam_cap}" if skip
+                  else f"head -n {bam_cap}")
         inner = (f"cd {shlex.quote(t.workdir)} && "
-                 f"{tool} {shlex.quote(str(p))} 2>&1 | head -n {bam_cap}")
+                 f"{tool} {shlex.quote(str(p))} 2>&1 | {window}")
         if engine in ("docker", "podman"):
             try:
                 chk = subprocess.run([engine, "image", "inspect", image],
@@ -2276,8 +2310,10 @@ class NfScope(App):
                    + ["-w", t.workdir, image, "sh", "-c", inner])
         else:
             cmd = [engine, "exec"] + mounts + [image, "sh", "-c", inner]
+        ok = False
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            ok = r.returncode == 0 and bool(r.stdout)
             out = (r.stdout or r.stderr or "(no output)").splitlines()
         except FileNotFoundError:
             out = [f"({engine} is not installed / not on PATH)"]
@@ -2285,7 +2321,11 @@ class NfScope(App):
             out = ["(viewer timed out after 120s)"]
         except Exception as e:                       # noqa: BLE001
             out = [f"(error running viewer: {e})"]
-        self.call_from_thread(self._viewer_done, out, bam_cap, p)
+        # A failed decode is a message, not the file: it must not be labelled
+        # "end of file", and scrolling must not try to fetch more of it.
+        self.call_from_thread(self._viewer_done, out, bam_cap, p, None,
+                              (not ok) or len(out) < bam_cap,
+                              (skip + len(out)) if ok else None, append)
 
     def _pager_command(self, t: Task, p: Path, pager: str) -> str:
         """Shell string that pages a file lazily. BAM/CRAM/BCF are decoded by
@@ -2408,7 +2448,8 @@ class NfScope(App):
 
     def _viewer_done(self, lines: list[str], cap: int = VIEW_MAX_LINES,
                      path: Path | None = None, pos: int | None = None,
-                     at_eof: bool = True) -> None:
+                     at_eof: bool = True, shown: int | None = None,
+                     append: bool = False) -> None:
         # A container decode can take seconds; by the time it lands the user may
         # have switched views or picked another file. Dropping a stale result is
         # right — otherwise it clobbers the run log with file content.
@@ -2421,30 +2462,36 @@ class NfScope(App):
             return
         log = panes.first(RichLog)
         log.auto_scroll = False          # a file: stay put so we can start at the top
-        log.clear()
-        for h in getattr(self, "_viewer_header", []):
-            log.write(h)
-        log.write("─" * 30)
+        if not append:
+            log.clear()
+            for h in getattr(self, "_viewer_header", []):
+                log.write(h)
+            # The "there is more" hint goes in this rule, at the top, because
+            # appends cannot remove anything: a hint written under the body
+            # would be stranded mid-file by the next chunk.
+            if at_eof:
+                log.write("─" * 30)
+            else:
+                log.write("──── scroll for more"
+                          f"{'' if self.web else '; L for less'}"
+                          "; o opens the work dir ────")
         # Write the body in one shot — per-line writes are ~100x slower.
         if lines:
             log.write("\n".join(lines))
         # Remember where this file stopped so scrolling to the bottom resumes
-        # from here. Only plain text can be resumed (see _run_viewer).
+        # from here: plain text by byte offset, gzip and container decodes by
+        # how many lines have been shown (those are pipes and can't seek).
         self._view_path, self._view_pos, self._view_eof = path, pos, at_eof
-        if pos is not None and not at_eof:
-            log.write(f"─── (showing {len(lines):,} lines — keep scrolling for "
-                      f"more{'' if self.web else ', or L for less'}; "
-                      f"o opens the work dir) ───")
-        elif len(lines) >= cap:
-            # Not resumable (gzip, or a container decode): the cap is the end of
-            # what this pane will show, so say so rather than implying more.
-            more = "press F for more in-pane" if not self.web else "capped here"
-            log.write(f"─── (showing {cap:,} lines — {more}"
-                      f"{'' if self.web else ', or L for less'}; "
-                      f"o opens the work dir) ───")
+        self._view_shown = shown
+        self._extending = False
+        # Only ever written at the real end, so it cannot end up mid-pane.
+        if at_eof and (append or shown is not None):
+            log.write("─── (end of file) ───")
         # Scroll to the top after the content is laid out (doing it now, before
-        # the virtual size is measured, doesn't stick).
-        self.call_after_refresh(lambda: log.scroll_home(animate=False))
+        # the virtual size is measured, doesn't stick). On an append we must not
+        # jump — the reader is at the bottom, which is why more was loaded.
+        if not append:
+            self.call_after_refresh(lambda: log.scroll_home(animate=False))
 
     def _render_current(self) -> None:
         """Every tick / selection change: (re)draw the pane for the current view."""

@@ -2505,3 +2505,276 @@ def test_run_log_pager_carries_the_quit_hint(tmp_path, monkeypatch):
         return True
 
     assert drive(NfScope(tmp_path), steps)
+
+
+# ---------------------------------------------------------------------------
+# gzip and container-decoded files stream too. Neither can seek — a deflate
+# stream and a `samtools view` pipe both have to restart from the beginning —
+# so they resume by line count instead of byte offset.
+# ---------------------------------------------------------------------------
+
+def test_head_gzip_skips_lines(tmp_path):
+    import gzip as _gz
+    p = tmp_path / "f.gz"
+    with _gz.open(p, "wt") as f:
+        f.write("".join(f"line {i}\n" for i in range(100)))
+    assert nf_tui.head_gzip(p, 5) == [f"line {i}" for i in range(5)]
+    assert nf_tui.head_gzip(p, 5, skip=10) == [f"line {i}" for i in range(10, 15)]
+
+
+def test_head_gzip_skip_past_the_end_is_empty(tmp_path):
+    import gzip as _gz
+    p = tmp_path / "f.gz"
+    with _gz.open(p, "wt") as f:
+        f.write("a\nb\n")
+    assert nf_tui.head_gzip(p, 10, skip=50) == []
+
+
+def test_head_gzip_walks_a_file_exactly_once(tmp_path):
+    """No gaps and no repeats across chunks — the property that matters when
+    the pane is stitched together from successive reads."""
+    import gzip as _gz
+    p = tmp_path / "f.gz"
+    with _gz.open(p, "wt") as f:
+        f.write("".join(f"line {i}\n" for i in range(500)))
+    seen, skip = [], 0
+    while True:
+        chunk = nf_tui.head_gzip(p, 64, skip=skip)
+        if not chunk:
+            break
+        seen += chunk
+        skip += len(chunk)
+    assert seen == [f"line {i}" for i in range(500)]
+
+
+def test_gzip_preview_grows_when_you_scroll(tmp_path):
+    import gzip as _gz
+    from nf_tui import VIEW_MAX_LINES
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    gzp = wd / "reads.fastq.gz"
+    with _gz.open(gzp, "wt") as f:
+        f.write("".join(f"gz line {i}\n" for i in range(VIEW_MAX_LINES * 4)))
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("reads.fastq.gz")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        first = len(pane.lines)
+        assert app._view_shown == VIEW_MAX_LINES, app._view_shown
+        assert not app._view_eof, "a long gzip should not report eof on open"
+
+        pane.scroll_end(animate=False)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(pane.lines) > first, "gzip pane did not grow on scroll"
+        assert app._view_shown > VIEW_MAX_LINES, app._view_shown
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_short_gzip_reports_eof_and_does_not_grow(tmp_path):
+    import gzip as _gz
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    gzp = wd / "small.gz"
+    with _gz.open(gzp, "wt") as f:
+        f.write("one\ntwo\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("small.gz")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        n = len(pane.lines)
+        assert app._view_eof
+        pane.scroll_end(animate=False)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert len(pane.lines) == n
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_container_decode_window_skips_lines(tmp_path):
+    """The BAM path re-decodes and drops the lines already shown: the pipe
+    cannot seek, so `tail -n +N` is how it resumes."""
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    (wd / ".command.run").write_text(
+        "  docker run --rm -v /work:/work quay.io/biocontainers/samtools:1.21 \\\n")
+    bam = wd / "aln.bam"
+    bam.write_bytes(b"\x1f\x8b" + b"\x00" * 100)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+    seen: list[str] = []
+
+    async def steps(app, pilot):
+        import subprocess as sp
+        real = sp.run
+
+        def fake(cmd, *a, **k):
+            if isinstance(cmd, list) and any("samtools" in str(c) for c in cmd):
+                seen.append(" ".join(str(c) for c in cmd))
+                class R:
+                    returncode = 0
+                    stdout = "\n".join(f"read {i}" for i in range(500))
+                    stderr = ""
+                return R()
+            return real(cmd, *a, **k)
+
+        sp.run = fake
+        try:
+            t = Task(hash="ab/cccc", name="P:A (s1)", status="COMPLETED",
+                     exit="0", workdir=str(wd))
+            app._files_task = t
+            app._run_viewer(t, bam, "samtools view -h", False, skip=500,
+                            append=True)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        finally:
+            sp.run = real
+        assert seen, "the container decode never ran"
+        # the first call is the `docker image inspect` probe; the decode follows
+        decode = [c for c in seen if "sh -c" in c or "tail -n" in c]
+        assert decode, seen
+        assert "tail -n +501" in decode[0], decode[0]
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_scrolling_appends_without_stranding_hints(tmp_path):
+    """RichLog cannot delete, so a "more to come" hint written under the body
+    gets buried mid-file by the next chunk. It belongs in the top rule, and
+    earlier content must never be rewritten."""
+    import gzip as _gz
+    from nf_tui import VIEW_MAX_LINES
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    gzp = wd / "big.gz"
+    with _gz.open(gzp, "wt") as f:
+        f.write("".join(f"line {i}\n" for i in range(VIEW_MAX_LINES * 4)))
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    def rendered(pane):
+        return ["".join(s.text for s in st._segments) for st in pane.lines]
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("big.gz")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+
+        snaps = [rendered(pane)]
+        for _ in range(3):
+            pane.scroll_end(animate=False)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            snaps.append(rendered(pane))
+
+        for i in range(1, len(snaps)):
+            assert snaps[i][: len(snaps[i - 1])] == snaps[i - 1], (
+                f"chunk {i} rewrote earlier content instead of appending")
+        assert len(snaps[-1]) > len(snaps[0]), "pane never grew"
+        hints = [l for l in snaps[-1] if "scroll for more" in l]
+        assert len(hints) == 1, f"expected one hint, found {len(hints)}"
+        assert "scroll for more" in snaps[-1][2] or "scroll for more" in snaps[-1][3], \
+            "the hint should sit in the top rule, not in the body"
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_failed_decode_is_not_labelled_end_of_file(tmp_path):
+    """A decode that errors is a message, not the file: it must not claim to be
+    the end of it, and scrolling must not try to fetch more."""
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    (wd / ".command.run").write_text(
+        "  docker run --rm -v /w:/w quay.io/biocontainers/samtools:1.21 \\\n")
+    bam = wd / "aln.bam"
+    bam.write_bytes(b"\x1f\x8b" + b"\x00" * 100)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        import subprocess as sp
+        real = sp.run
+
+        def fake(cmd, *a, **k):
+            if isinstance(cmd, list) and any("samtools" in str(c) for c in cmd):
+                class R:
+                    returncode = 1
+                    stdout = ""
+                    stderr = "samtools view: failed to open file"
+                return R()
+            return real(cmd, *a, **k)
+
+        sp.run = fake
+        try:
+            t = Task(hash="ab/cccc", name="P:A (s1)", status="COMPLETED",
+                     exit="0", workdir=str(wd))
+            app._files_task = t
+            app._last_file = bam
+            app.view = "files"
+            app._run_viewer(t, bam, "samtools view -h", False)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        finally:
+            sp.run = real
+        pane = app.query_one("#log", RichLog)
+        text = "\n".join("".join(s.text for s in st._segments) for st in pane.lines)
+        assert "end of file" not in text, text
+        assert app._view_shown is None, "a failed decode must not be resumable"
+        return True
+
+    assert drive(NfScope(tmp_path), steps)

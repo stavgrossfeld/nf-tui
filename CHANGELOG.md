@@ -66,6 +66,13 @@ The first release published to PyPI: `uv tool install nf-tui`.
   opens in **0.35 s**, and twelve screens of scrolling cost 73 MB. `F` is now a
   bigger first bite rather than a different mechanism, and the run log's
   scroll-up backfill is unchanged.
+- **BAM/CRAM and gzip scroll too.** They were the two formats left capped —
+  a `samtools view` pipe and a deflate stream can't seek to a byte offset, so
+  a BAM stopped dead at 500 lines saying "capped here", which for a genomics
+  tool is the wrong file type to give up on. Both now resume by line count
+  (re-decoding and dropping what's already shown), so a 33 MB BAM opens in
+  1.1 s and each scroll pulls another 500 records in ~0.8 s. Verified against
+  a real nf-core/sarek BAM through its own container.
 - **Task logs backfill on scroll-up too.** They open at the tail (a runaway
   task can write gigabytes to `.command.log`) and scrolling to the top pulls in
   the previous chunk, the way the run log already did. Small logs are unaffected

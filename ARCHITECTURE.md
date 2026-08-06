@@ -216,9 +216,13 @@ Two rendering rules learned the hard way, both still load-bearing:
 `(next_offset, lines, at_eof)`, so a preview resumes exactly where it stopped
 and grows when you reach the bottom. The alternative — loading a fixed large cap
 in one go — measured 42 s and 719 MB on a 159 MB file and still showed a tenth
-of it. Gzip is the exception: a deflate stream cannot be resumed from a byte
-offset without decompressing from the start, so that path stays capped and says
-so.
+of it. Gzip and container decodes cannot resume from a byte offset — a deflate stream
+and a `samtools view` pipe both have to restart — so they resume by *line
+count* instead: the decoder is re-run with `tail -n +N` to drop what has
+already been shown. That re-reads from the beginning each time, which is the
+price of a format that cannot seek, but memory stays at one chunk and the pane
+keeps growing. A failed decode reports no resume point, so an error message is
+never mistaken for the end of a file.
 
 **Following** only happens while the pane is parked at the bottom. Otherwise
 every arriving line yanked the viewport back and made scrolling up impossible
