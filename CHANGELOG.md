@@ -2,7 +2,8 @@
 
 ## 1.0.0 — first public release
 
-The first release published to PyPI: `uv tool install nf-tui`.
+Install from the repository:
+`uv tool install git+https://github.com/stavgrossfeld/nf-tui`.
 
 ### Nextflow coverage
 

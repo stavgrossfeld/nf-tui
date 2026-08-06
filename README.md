@@ -89,17 +89,19 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install nf-tui
+uv tool install git+https://github.com/stavgrossfeld/nf-tui
 ```
 
 or with pip:
 
 ```bash
-pip install nf-tui
+pip install git+https://github.com/stavgrossfeld/nf-tui
 ```
 
-This puts `nf-tui`, `nf-tui-web` and `nf-tui-run` on your PATH. To install the
-development version instead: `uv tool install git+https://github.com/stavgrossfeld/nf-tui`.
+This puts `nf-tui`, `nf-tui-web`, `nf-tui-run` and `nf-tui-mcp` on your PATH.
+
+Not on PyPI yet, so install from the repository. Python ≥ 3.10 is the only
+requirement — no container engine is needed unless you want to view BAM/CRAM.
 
 ## Usage
 
@@ -176,8 +178,8 @@ login node against a run on shared storage (`/scratch`, `$WORK`, …):
 
 ```bash
 # one-time, in your home (no admin needed)
-uv tool install nf-tui
-# or: pip install --user nf-tui
+uv tool install git+https://github.com/stavgrossfeld/nf-tui
+# or: pip install --user git+https://github.com/stavgrossfeld/nf-tui
 
 nf-tui /scratch/$USER/my-run          # watch a run over SSH
 ```
