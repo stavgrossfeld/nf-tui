@@ -1828,3 +1828,680 @@ def test_remote_cache_can_be_invalidated(tmp_path, monkeypatch):
     m.remote_forget(uri)
     assert "second" in m.remote_cat(uri)               # re-read
 
+
+
+# ---------------------------------------------------------------------------
+# Reading big files. A pipeline task can emit a multi-gigabyte output, so every
+# host read has to be bounded *while* reading. The in-pane preview used to do
+# `read_text().splitlines()[:cap]`, which measured ~2.1x the file size in peak
+# RSS and ~2.8s/GB — a 10 GB file exhausted a 24 GB host before painting a line.
+# ---------------------------------------------------------------------------
+
+def test_head_text_caps_and_strips_newlines(tmp_path):
+    p = tmp_path / "out.txt"
+    p.write_text("".join(f"line {i}\n" for i in range(50)))
+    out = nf_tui.head_text(p, 5)
+    assert out == [f"line {i}" for i in range(5)]
+
+
+def test_head_text_reads_a_short_file_whole(tmp_path):
+    p = tmp_path / "out.txt"
+    p.write_text("a\nb\n")
+    assert nf_tui.head_text(p, 100) == ["a", "b"]
+
+
+def test_head_text_reports_a_missing_file(tmp_path):
+    out = nf_tui.head_text(tmp_path / "nope.txt", 10)
+    assert len(out) == 1 and "cannot read" in out[0]
+
+
+def test_head_text_returns_before_eof(tmp_path):
+    """The real laziness proof: served a FIFO that is never closed, head_text
+    must still return. `read_text()` would block here forever, which is the
+    same reason it cannot bound a huge regular file."""
+    import threading
+
+    fifo = tmp_path / "stream"
+    os.mkfifo(fifo)
+    stop = threading.Event()
+
+    def writer():
+        with open(fifo, "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(200)))
+            f.flush()
+            stop.wait(10)            # hold the pipe open: no EOF for the reader
+
+    w = threading.Thread(target=writer, daemon=True)
+    w.start()
+
+    result: list = []
+    r = threading.Thread(target=lambda: result.extend(nf_tui.head_text(fifo, 5)),
+                         daemon=True)
+    r.start()
+    r.join(timeout=10)
+    stop.set()
+    assert not r.is_alive(), "head_text blocked waiting for EOF"
+    assert result == [f"line {i}" for i in range(5)]
+
+
+def _peak_rss_mb(code: str) -> float:
+    """Run `code` in a fresh interpreter, return its peak RSS in MB."""
+    import subprocess
+    import sys
+    prog = ("import resource, sys\n"
+            "from pathlib import Path\n"
+            "import nf_tui\n"
+            + code +
+            "\nprint(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024**2)\n")
+    r = subprocess.run([sys.executable, "-c", prog], capture_output=True,
+                       text=True, timeout=300)
+    assert r.returncode == 0, r.stderr
+    return float(r.stdout.strip().splitlines()[-1])
+
+
+@pytest.fixture(scope="module")
+def big_file(tmp_path_factory):
+    """~250 MB of log-like text. Big enough that slurping it shows up clearly
+    against a ~49 MB interpreter baseline, small enough to stay quick."""
+    p = tmp_path_factory.mktemp("big") / "huge.txt"
+    block = "".join(f"padding line {i} " + "x" * 60 + "\n" for i in range(10_000))
+    with p.open("w") as f:
+        for _ in range(300):
+            f.write(block)
+    assert p.stat().st_size > 200 * 1024**2
+    return p
+
+
+def test_head_text_bounds_memory_on_a_big_file(big_file):
+    peak = _peak_rss_mb(
+        f"out = nf_tui.head_text(Path({str(big_file)!r}), 2000)\n"
+        f"assert len(out) == 2000, len(out)\n")
+    size_mb = big_file.stat().st_size / 1024**2
+    assert peak < 200, f"peak RSS {peak:.0f} MB reading a {size_mb:.0f} MB file"
+
+
+def test_tail_text_bounds_memory_on_a_big_file(big_file):
+    peak = _peak_rss_mb(
+        f"t = nf_tui._tail_text(Path({str(big_file)!r}))\n"
+        f"assert len(t) <= nf_tui.LOG_CHARS, len(t)\n")
+    size_mb = big_file.stat().st_size / 1024**2
+    assert peak < 200, f"peak RSS {peak:.0f} MB tailing a {size_mb:.0f} MB file"
+
+
+def test_tail_text_returns_the_end_of_the_file(tmp_path):
+    p = tmp_path / "out.txt"
+    p.write_text("".join(f"line {i}\n" for i in range(100_000)))
+    t = nf_tui._tail_text(p)
+    assert t is not None
+    assert t.rstrip("\n").endswith("line 99999")
+    assert len(t) <= nf_tui.LOG_CHARS
+    assert "\n" in t
+
+
+def test_tail_text_keeps_a_small_file_intact(tmp_path):
+    p = tmp_path / "out.txt"
+    p.write_text("only\ntwo lines\n")
+    assert nf_tui._tail_text(p) == "only\ntwo lines\n"
+
+
+def test_tail_text_missing_file_is_none(tmp_path):
+    assert nf_tui._tail_text(tmp_path / "nope.txt") is None
+
+
+# ---------------------------------------------------------------------------
+# less and line numbering. Reaching EOF makes less number every line, and
+# quitting blocks on that count: measured 56s to exit `less -R +G` on a 10 GB
+# output, versus 0.21s with -n. See pager_flags.
+# ---------------------------------------------------------------------------
+
+def test_pager_flags_keeps_line_numbers_on_a_small_file(tmp_path):
+    p = tmp_path / "small.log"
+    p.write_text("a\n" * 100)
+    assert nf_tui.pager_flags(p) == "-R"
+
+
+def test_pager_flags_suppresses_line_numbers_on_a_big_file(tmp_path):
+    p = tmp_path / "big.log"
+    with p.open("wb") as f:                       # sparse: no real bytes written
+        f.truncate(nf_tui.LESS_LINENUM_MAX + 1)
+    assert nf_tui.pager_flags(p) == "-Rn"
+
+
+def test_pager_flags_on_a_missing_file(tmp_path):
+    assert nf_tui.pager_flags(tmp_path / "nope.log") == "-R"
+
+
+def test_run_log_pager_command_uses_n_when_the_log_is_huge(tmp_path, monkeypatch):
+    """The run log is opened with +G, which lands at EOF — exactly the case that
+    made quitting take a minute."""
+    log = tmp_path / ".nextflow.log"
+    log.write_text("~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   "exit: 0; error: -; workDir: /tmp/x]\n")
+    pages: list[str] = []
+
+    async def steps(app, pilot):
+        monkeypatch.setattr(app, "_page", lambda cmd: pages.append(cmd))
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("L")
+        await pilot.pause()
+        assert pages, "L did not invoke the pager"
+        assert "+G" in pages[0]
+        assert " -R " in pages[0], pages[0]        # small log: numbering is free
+        pages.clear()
+        # Grow it past the threshold and page it again.
+        with log.open("ab") as f:
+            f.truncate(nf_tui.LESS_LINENUM_MAX + 1)
+        await pilot.press("L")
+        await pilot.pause()
+        assert pages, "second L did not invoke the pager"
+        assert " -Rn " in pages[0], pages[0]
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_file_pager_command_uses_n_when_the_file_is_huge(tmp_path):
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    small = wd / "small.txt"
+    small.write_text("hi\n")
+    big = wd / "big.txt"
+    with big.open("wb") as f:
+        f.truncate(nf_tui.LESS_LINENUM_MAX + 1)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        t = Task(hash="ab/cccc", name="P:A (s1)", status="COMPLETED",
+                 exit="0", workdir=str(wd))
+        assert " -R " in app._pager_command(t, small, "less")
+        assert " -Rn " in app._pager_command(t, big, "less")
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+# ---------------------------------------------------------------------------
+# Log scans stream instead of slurping. parse_log runs on every refresh tick of
+# a live run, and a long pipeline's .nextflow.log reaches hundreds of MB;
+# read_text().splitlines() on one measured 600 MB of peak RSS for a 161 MB log.
+# ---------------------------------------------------------------------------
+
+def test_iter_lines_yields_stripped_lines(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("one\ntwo\nthree\n")
+    assert list(nf_tui.iter_lines(p)) == ["one", "two", "three"]
+
+
+def test_iter_lines_handles_no_trailing_newline(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("one\ntwo")
+    assert list(nf_tui.iter_lines(p)) == ["one", "two"]
+
+
+def test_iter_lines_on_a_missing_file_is_empty(tmp_path):
+    assert list(nf_tui.iter_lines(tmp_path / "nope.txt")) == []
+
+
+def test_iter_lines_is_lazy(tmp_path):
+    """Proof it streams: a FIFO nobody closes would hang read_text() forever."""
+    import threading
+
+    fifo = tmp_path / "stream"
+    os.mkfifo(fifo)
+    stop = threading.Event()
+
+    def writer():
+        with open(fifo, "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(200)))
+            f.flush()
+            stop.wait(10)
+
+    threading.Thread(target=writer, daemon=True).start()
+    got: list = []
+
+    def reader():
+        for i, line in enumerate(nf_tui.iter_lines(fifo)):
+            got.append(line)
+            if i >= 4:
+                break
+
+    r = threading.Thread(target=reader, daemon=True)
+    r.start()
+    r.join(timeout=10)
+    stop.set()
+    assert not r.is_alive(), "iter_lines blocked waiting for EOF"
+    assert got == [f"line {i}" for i in range(5)]
+
+
+def test_parse_errors_reads_two_blocks_in_one_log(tmp_path):
+    """The rewritten scan ends a block on a timestamped line — and that same
+    line may start the next error, which the old index-based loop relied on."""
+    wd1 = tmp_path / "work" / "30" / "0c1af39fcf6d4bf28042"
+    wd2 = tmp_path / "work" / "aa" / "bb1af39fcf6d4bf28042"
+    for w in (wd1, wd2):
+        w.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"Jul-15 15:24:38.000 [main] ERROR nextflow.Nextflow - "
+        f"Error executing process > 'P:ONE (s1)'\n"
+        f"\nCaused by:\n  first failure\n\nWork dir:\n  {wd1}\n\n"
+        f"Jul-15 15:24:39.000 [main] ERROR nextflow.Nextflow - "
+        f"Error executing process > 'P:TWO (s2)'\n"
+        f"\nCaused by:\n  second failure\n\nWork dir:\n  {wd2}\n\n"
+        f"Jul-15 15:24:40.000 [main] DEBUG nextflow.Session - Session await\n")
+
+    errs = nf_tui.parse_errors(log)
+    assert "first failure" in errs["30/0c1af3"]
+    assert "second failure" in errs["aa/bb1af3"]
+    # blocks must not bleed into each other, or the wrong cause is shown
+    assert "second failure" not in errs["30/0c1af3"]
+    assert "first failure" not in errs["aa/bb1af3"]
+    assert "Session await" not in errs["aa/bb1af3"]
+    assert errs["name:P:ONE (s1)"] == errs["30/0c1af3"]
+
+
+def test_parse_errors_keeps_a_block_that_ends_at_eof(tmp_path):
+    wd = tmp_path / "work" / "30" / "0c1af39fcf6d4bf28042"
+    wd.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"Jul-15 15:24:38.000 [main] ERROR nextflow.Nextflow - "
+        f"Error executing process > 'P:LAST (s1)'\n"
+        f"\nCaused by:\n  died at the end\n\nWork dir:\n  {wd}\n")
+    errs = nf_tui.parse_errors(log)
+    assert "died at the end" in errs["30/0c1af3"]
+
+
+def test_parse_errors_caps_a_block_in_a_log_with_no_timestamps(tmp_path):
+    """A malformed log would otherwise make one block swallow the whole file."""
+    log = tmp_path / ".nextflow.log"
+    log.write_text("ERROR nextflow.Nextflow - Error executing process > 'P:X (s)'\n"
+                   + "junk\n" * (nf_tui.ERROR_BLOCK_MAX_LINES + 500))
+    errs = nf_tui.parse_errors(log)
+    block = errs["name:P:X (s)"]
+    assert len(block.splitlines()) <= nf_tui.ERROR_BLOCK_MAX_LINES + 1
+
+
+@pytest.fixture(scope="module")
+def big_log(tmp_path_factory):
+    """~95 MB of realistic handler + noise lines, but only 256 *distinct*
+    tasks. Deliberate: 300k Task objects would cost ~150 MB of legitimate
+    memory and swamp the thing under test, which is how the file is read."""
+    p = tmp_path_factory.mktemp("biglog") / ".nextflow.log"
+    handler = ("Jul-30 11:42:03.117 [Task monitor] DEBUG "
+               "n.processor.TaskPollingMonitor - Task completed > TaskHandler"
+               "[id: {i}; name: NFCORE:SAREK:FASTQC (s{i}); status: COMPLETED; "
+               "exit: 0; error: -; workDir: /w/{g:02x}/{h}bbbbbbbbbbbbbbbb]\n")
+    noise = ("Jul-30 11:42:03.118 [main] DEBUG nextflow.Session - "
+             "Session await > all processes finished\n")
+    with p.open("w") as f:
+        for i in range(300_000):
+            f.write(handler.format(i=i, g=i % 256, h=f"{i % 256:06x}"))
+            f.write(noise)
+    assert p.stat().st_size > 90 * 1024**2
+    return p
+
+
+def test_parse_log_bounds_memory_on_a_big_log(big_log):
+    peak = _peak_rss_mb(
+        f"ts = nf_tui.parse_log(Path({str(big_log)!r}))\n"
+        f"assert len(ts) == 256, len(ts)\n")
+    size_mb = big_log.stat().st_size / 1024**2
+    assert peak < 150, f"peak RSS {peak:.0f} MB parsing a {size_mb:.0f} MB log"
+
+
+def test_parse_errors_bounds_memory_on_a_big_log(big_log):
+    peak = _peak_rss_mb(f"e = nf_tui.parse_errors(Path({str(big_log)!r}))\n"
+                        f"assert e == {{}}, len(e)\n")
+    size_mb = big_log.stat().st_size / 1024**2
+    assert peak < 200, f"peak RSS {peak:.0f} MB scanning a {size_mb:.0f} MB log"
+
+
+def test_read_all_tails_a_big_command_sh(tmp_path):
+    p = tmp_path / ".command.sh"
+    p.write_text("".join(f"step {i}\n" for i in range(200_000)))
+    out = nf_tui._read_all(p)
+    assert len(out) <= 20000
+    assert out.rstrip().endswith("step 199999")
+
+
+def test_read_all_missing_file(tmp_path):
+    assert "cannot read" in nf_tui._read_all(tmp_path / "nope.sh")
+
+
+def test_follower_skips_ahead_on_a_huge_burst(tmp_path):
+    """A task can dump gigabytes between ticks; the pane should get the newest
+    window, not all of it."""
+    p = tmp_path / ".command.log"
+    p.write_text("start\n")
+    f = nf_tui.Follower(p)
+    f.read_new()                                   # consume what's there
+    burst = "x" * (nf_tui.FOLLOW_MAX_CATCHUP * 3)
+    with p.open("a") as fh:
+        fh.write(burst + "\nTHE-END\n")
+    data = f.read_new()
+    assert len(data) <= nf_tui.FOLLOW_MAX_CATCHUP + 64, len(data)
+    assert data.rstrip().endswith("THE-END")       # newest output is kept
+
+
+def test_follower_reads_normal_appends_whole(tmp_path):
+    p = tmp_path / ".command.log"
+    p.write_text("one\n")
+    f = nf_tui.Follower(p)
+    assert f.read_new() == "one\n"
+    with p.open("a") as fh:
+        fh.write("two\nthree\n")
+    assert f.read_new() == "two\nthree\n"
+
+
+def test_read_all_bounds_memory_on_a_big_command_sh(big_file):
+    """Same output either way — only the memory tells the two apart, so this is
+    the assertion that pins the fix."""
+    peak = _peak_rss_mb(
+        f"s = nf_tui._read_all(Path({str(big_file)!r}))\n"
+        f"assert len(s) <= 20000, len(s)\n")
+    size_mb = big_file.stat().st_size / 1024**2
+    assert peak < 200, f"peak RSS {peak:.0f} MB reading a {size_mb:.0f} MB file"
+
+
+def test_remote_cat_keeps_only_the_tail_of_a_huge_object(tmp_path, monkeypatch):
+    """S3 objects are read through the user's CLI, whose whole stdout used to be
+    buffered *and cached*. A big task output must not sit in memory in full."""
+    import nf_tui as m
+    bucket = tmp_path / "bucket"
+    task = bucket / "work" / "ab" / "cd01"
+    task.mkdir(parents=True)
+    big = task / ".command.out"
+    with big.open("w") as f:
+        f.write("HEAD-MARKER\n")
+        f.write("".join(f"line {i}\n" for i in range(400_000)))
+        f.write("TAIL-MARKER\n")
+    assert big.stat().st_size > 4 * 1024 * 1024
+
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    (shim_dir / "aws").write_text(AWS_SHIM)
+    (shim_dir / "aws").chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("FAKE_S3_ROOT", str(bucket))
+    m._remote_cache.clear()
+
+    got = m.remote_cat("s3://work/ab/cd01/.command.out")
+    assert got is not None
+    assert got.rstrip().endswith("TAIL-MARKER")     # the tail is what's wanted
+    assert len(got) <= 20_000                       # default limit honoured
+    assert "HEAD-MARKER" not in got
+    # and the cache holds the bounded tail, not the whole object
+    cached = m._remote_cache[("cat", "s3://work/ab/cd01/.command.out")]
+    assert isinstance(cached, str)
+    assert len(cached) <= m.REMOTE_CAT_MAX
+    assert len(cached) < big.stat().st_size / 2
+
+
+def test_remote_cat_still_returns_a_small_object_whole(tmp_path, monkeypatch):
+    import nf_tui as m
+    bucket = tmp_path / "bucket"
+    task = bucket / "work" / "ef" / "9901"
+    task.mkdir(parents=True)
+    (task / ".command.out").write_text("just\na few\nlines\n")
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    (shim_dir / "aws").write_text(AWS_SHIM)
+    (shim_dir / "aws").chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("FAKE_S3_ROOT", str(bucket))
+    m._remote_cache.clear()
+    assert m.remote_cat("s3://work/ef/9901/.command.out") == "just\na few\nlines\n"
+
+
+def test_remote_cat_missing_object_is_none(tmp_path, monkeypatch):
+    import nf_tui as m
+    bucket = tmp_path / "bucket"
+    bucket.mkdir()
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    (shim_dir / "aws").write_text(AWS_SHIM)
+    (shim_dir / "aws").chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim_dir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("FAKE_S3_ROOT", str(bucket))
+    m._remote_cache.clear()
+    assert m.remote_cat("s3://work/zz/9999/.command.out") is None
+
+
+# ---------------------------------------------------------------------------
+# Previews grow as you scroll, instead of deciding up front how much of a file
+# to materialise. `less` streams; loading everything cost 42s / 719 MB on a
+# 159 MB file and still showed only a tenth of it.
+# ---------------------------------------------------------------------------
+
+def test_read_forward_resumes_from_the_offset(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("".join(f"line {i}\n" for i in range(100)))
+    pos, lines, eof = nf_tui.read_forward(p, 0, 10)
+    assert lines == [f"line {i}" for i in range(10)]
+    assert not eof and pos > 0
+    pos2, lines2, eof2 = nf_tui.read_forward(p, pos, 10)
+    assert lines2 == [f"line {i}" for i in range(10, 20)]
+    assert pos2 > pos and not eof2
+
+
+def test_read_forward_reports_eof(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("a\nb\n")
+    pos, lines, eof = nf_tui.read_forward(p, 0, 100)
+    assert lines == ["a", "b"] and eof
+
+
+def test_read_forward_walks_a_whole_file_exactly_once(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("".join(f"L{i}\n" for i in range(1000)))
+    seen, pos, eof, guard = [], 0, False, 0
+    while not eof and guard < 100:
+        pos, chunk, eof = nf_tui.read_forward(p, pos, 64)
+        seen += chunk
+        guard += 1
+    assert seen == [f"L{i}" for i in range(1000)]        # no gaps, no repeats
+
+
+def test_read_forward_on_a_missing_file(tmp_path):
+    pos, lines, eof = nf_tui.read_forward(tmp_path / "nope", 0, 10)
+    assert lines == [] and eof
+
+
+def test_preview_grows_when_you_scroll_to_the_bottom(tmp_path):
+    """The behaviour that replaces 'load the whole thing': each time the pane
+    reaches the bottom, the next chunk is appended."""
+    from nf_tui import VIEW_MAX_LINES
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    big = wd / "big.txt"
+    big.write_text("".join(f"line {i}\n" for i in range(VIEW_MAX_LINES * 6)))
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("big.txt")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        first = len(pane.lines)
+        assert app._view_pos is not None and not app._view_eof, "no resume point"
+
+        pane.scroll_end(animate=False)
+        await pilot.pause()
+        await pilot.pause()
+        grown = len(pane.lines)
+        assert grown > first, f"pane did not grow on scroll ({first} -> {grown})"
+
+        before = app._view_pos
+        pane.scroll_end(animate=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert len(pane.lines) > grown          # and keeps going
+        assert app._view_pos > before           # the resume point advanced
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_preview_of_a_small_file_is_complete_and_does_not_extend(tmp_path):
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    (wd / "small.txt").write_text("one\ntwo\nthree\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("small.txt")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        n = len(pane.lines)
+        assert app._view_eof, "a fully-read file should be marked eof"
+        pane.scroll_end(animate=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert len(pane.lines) == n, "a complete file must not grow further"
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_task_log_backfills_when_you_scroll_to_the_top(tmp_path):
+    """A runaway .command.log opens at its tail; scrolling up must recover the
+    earlier output rather than leaving it unreachable."""
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    cl = wd / ".command.log"
+    with cl.open("w") as f:
+        f.write("VERY-FIRST-LINE\n")
+        for i in range(40_000):
+            f.write(f"task output line {i} " + "q" * 40 + "\n")
+        f.write("VERY-LAST-LINE\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        opened = len(pane.lines)
+        text = "\n".join(str(s) for s in pane.lines)
+        assert "VERY-LAST-LINE" in text, "task log should open at its tail"
+        assert app._tasklog_start > 0, "a big log should not start fully loaded"
+
+        before_off = app._tasklog_start
+        pane.scroll_home(animate=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert len(pane.lines) > opened, "scrolling to the top loaded nothing"
+        assert app._tasklog_start < before_off, "the start offset did not move back"
+        # the newest output is still there after the pane is rewritten
+        text = "\n".join(str(s) for s in pane.lines)
+        assert "VERY-LAST-LINE" in text
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_small_task_log_loads_whole_and_does_not_backfill(tmp_path):
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("FIRST\nmiddle\nLAST\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("t")
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        text = "\n".join(str(s) for s in pane.lines)
+        assert "FIRST" in text and "LAST" in text   # nothing lost on a small log
+        assert app._tasklog_start == 0
+        n = len(pane.lines)
+        pane.scroll_home(animate=False)
+        await pilot.pause()
+        await pilot.pause()
+        assert len(pane.lines) == n, "a fully-loaded log must not grow"
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_pager_command_carries_the_quit_hint(tmp_path):
+    """Esc cannot be rebound to quit less (ESC prefixes every arrow key), so the
+    status line has to say how to leave."""
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    f = wd / "out.txt"
+    f.write_text("hi\n")
+    gz = wd / "out.gz"
+    import gzip as _gz
+    with _gz.open(gz, "wt") as fh:
+        fh.write("hi\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+
+    async def steps(app, pilot):
+        t = Task(hash="ab/cccc", name="P:A (s1)", status="COMPLETED",
+                 exit="0", workdir=str(wd))
+        for path in (f, gz):
+            cmd = app._pager_command(t, path, "less")
+            assert "q quit" in cmd, cmd
+        return True
+
+    assert drive(NfScope(tmp_path), steps)
+
+
+def test_run_log_pager_carries_the_quit_hint(tmp_path, monkeypatch):
+    log = tmp_path / ".nextflow.log"
+    log.write_text("~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   "exit: 0; error: -; workDir: /tmp/x]\n")
+    pages: list[str] = []
+
+    async def steps(app, pilot):
+        monkeypatch.setattr(app, "_page", lambda cmd: pages.append(cmd))
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("L")
+        await pilot.pause()
+        assert pages and "q quit" in pages[0], pages
+        return True
+
+    assert drive(NfScope(tmp_path), steps)

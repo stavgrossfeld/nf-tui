@@ -27,7 +27,8 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   (from `.command.trace`); `s` sorts to float the slowest / hungriest process
   to the top, so the bottleneck is one keypress away.
 - **Per-task logs** — task output (`.command.log` with container-pull and
-  JVM/Fontconfig noise filtered out) or the raw container log.
+  JVM/Fontconfig noise filtered out) or the raw container log. A very large
+  task log opens at its tail and backfills as you scroll up.
 - **Failure triage** — `e` jumps to the next failed task and leads with *why*
   it failed: Nextflow's own error report (cause, exit status, the command, and
   stderr), lifted out of the run log and shown above the task's output.
@@ -38,7 +39,10 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
 - **Output files** — browse a task's work-dir files with sizes; preview text
   and gzip on the host, and **BAM / CRAM / BCF decoded with `samtools` /
   `bcftools` from the task's own container** (reusing its mounts, so the
-  reference genome resolves). Press `L` to open any file full in `less`.
+  reference genome resolves). The preview **grows as you scroll**: reaching the
+  bottom pulls in the next chunk, so a multi-gigabyte output opens instantly and
+  keeps going, rather than the pane deciding up front how much to load. Press
+  `L` to open any file in `less`.
 - **Live progress** — the header tracks `done/total (%)`, and while a pipeline
   runs it adds what's in flight, throughput, and an ETA for the queued work:
   `15/20 seen (75%) · 5 running · 41.8/min · ~7.2s for queued`. Mid-run totals
@@ -69,8 +73,9 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   `.nextflow.log` — tasks, statuses, exit codes, progress, failure reports —
   needs no cloud access at all.
 - **Web mode** — the same UI in a browser via `nf-tui-web`, streamed with
-  [textual-serve](https://github.com/Textualize/textual-serve). `F` loads a
-  whole file in-pane there, since the browser has no terminal for `less`.
+  [textual-serve](https://github.com/Textualize/textual-serve). There is no
+  terminal for `less` in a browser, so scrolling is how you read a big file
+  there — the preview keeps loading — and `F` pulls a bigger chunk at once.
 
 ## Install
 
@@ -205,7 +210,7 @@ Notes for clusters:
 | `e` | jump to the next failed task and show why it failed |
 | `p` | queue view — what's running vs pending right now, with elapsed times |
 | `L` | open in `less` — the task's `.command.log`, the whole run log, or the selected file (lazy paging + search) |
-| `F` | load the whole selected file in-pane (uncapped; the browser's `L`) |
+| `F` | pull a bigger chunk of the selected file in-pane at once (scrolling to the bottom loads more either way; the browser's `L`) |
 | `Space` / `PageDown` · `b` / `PageUp` · `G` / `Home` | page / jump in a log |
 | `z` / `m` | full-screen (maximize) the focused pane (`z`/`m`/`esc` to restore) |
 | `Tab` | cycle focus between panes |

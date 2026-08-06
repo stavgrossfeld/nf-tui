@@ -65,6 +65,7 @@ banner line, else Nextflow's default `<launch dir>/work`.
 
 | function | what it does |
 |---|---|
+| `iter_lines(path)` | stream a file's lines — what every log scan reads through |
 | `parse_log(log)` | the whole run as `Task` objects — the core of everything |
 | `split_name(name)` | `"NFCORE:SAREK:FASTQC (test)"` → `("NFCORE:SAREK:FASTQC", "test")` |
 | `is_done` / `is_failed` | status/exit interpretation, including `CACHED`/`STORED` as done |
@@ -195,7 +196,7 @@ switches between views. `self.view` is `task | container | files | run | queue`.
 |---|---|---|
 | run log | `_show_run_log`, `_paint_runlog`, `_runlog_backfill` | opens at the tail; scrolling up backfills the file a chunk at a time |
 | task / container log | `_load_task`, `_emit_view` | tails `.command.log`; leads with the failure report for a failed task |
-| files | `_populate_files`, `_open_file`, `_run_viewer` | previews text/gzip on the host, BAM/CRAM through the container |
+| files | `_populate_files`, `_open_file`, `_run_viewer`, `_preview_extend` | previews text/gzip on the host, BAM/CRAM through the container; plain text grows as you scroll |
 | queue | `_show_queue` | `squeue`-style, running first with elapsed times |
 | picker | `RunPickerScreen` | a `DataTable` of every run found under a directory |
 
@@ -206,11 +207,46 @@ Two rendering rules learned the hard way, both still load-bearing:
   `_paint_runlog` exists separately from `_show_run_log`.
 - **`RichLog` can only append.** Backfilling earlier log lines rewrites the pane
   and shifts the viewport down by exactly the number of lines prepended, which
-  is what keeps the line you were reading under your eye.
+  is what keeps the line you were reading under your eye. Growing *forward* is
+  the cheap direction — `_preview_extend` just appends, no rewrite — which is
+  why a file preview can keep loading as you scroll while the run log's upward
+  backfill has to redraw.
+
+**Nothing decides up front how much of a file to show.** `read_forward` returns
+`(next_offset, lines, at_eof)`, so a preview resumes exactly where it stopped
+and grows when you reach the bottom. The alternative — loading a fixed large cap
+in one go — measured 42 s and 719 MB on a 159 MB file and still showed a tenth
+of it. Gzip is the exception: a deflate stream cannot be resumed from a byte
+offset without decompressing from the start, so that path stays capped and says
+so.
 
 **Following** only happens while the pane is parked at the bottom. Otherwise
 every arriving line yanked the viewport back and made scrolling up impossible
 during a live run.
+
+**The log is scanned as a stream.** `parse_log` re-reads `.nextflow.log` on
+every tick of a live run, so `read_text().splitlines()` was paying ~3.7x the
+file's size in peak RSS once a second — 600 MB on a 161 MB log. Everything now
+reads through `iter_lines`, which holds one line at a time (600 MB → 42 MB).
+`parse_errors` became a forward state machine for the same reason: a block runs
+from an `Error executing process` line to the next timestamped one, which needs
+state rather than lookahead.
+
+**Every host read is capped while reading, not after.** Tasks emit outputs of
+arbitrary size, so `head_text` / `head_gzip` stop at the line cap and
+`_tail_text` seeks to the end. The obvious spellings — `read_text().splitlines()
+[:cap]` and `read_text()[-limit:]` — were both in place and cost 889 MB and
+494 MB of peak RSS on a 226 MB file; at 10 GB they exhaust the machine. Streaming
+holds ~43 MB whatever the size. `less` needs no such care on plain files, since
+it seeks: it opens a 9.3 GB file at the tail in 16 ms. It cannot seek a *pipe*,
+which is why the gz path pages from the top rather than passing `+G` — with `+G`
+a piped 10 GB decompression had painted nothing after 25 s.
+
+**`less` is fast to open a huge file and slow to leave one.** Reaching EOF makes
+it number every line, and `q` waits for the count: `less -R +G` on a 10 GB output
+painted in 0.11 s then took 56 s to exit, which is indistinguishable from a hung
+TUI. `pager_flags()` adds `-n` past 32 MB (0.2 s to quit) and keeps numbering
+below it, where it is free and `=`/`v`/`1234G` still work.
 
 ---
 

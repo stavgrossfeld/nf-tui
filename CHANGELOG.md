@@ -34,7 +34,8 @@ The first release published to PyPI: `uv tool install nf-tui`.
 - **Run picker** as a table: state, age, task count, percent done, failures.
   Runs that stopped without finishing are marked *stalled*.
 - `/` filters the task tree; `L` pages the task log, run log or any output file
-  in `less`; `F` loads a whole file in-pane (the browser's `L`).
+  in `less`; panes load more as you scroll, and `F` pulls a bigger chunk of a
+  file at once (the browser's `L`).
 
 ### Fixes worth naming
 
@@ -47,6 +48,57 @@ The first release published to PyPI: `uv tool install nf-tui`.
 - Switching runs kept the previous run's caches, so a task whose short hash
   collided showed the wrong metrics.
 - A slow container decode landing after a view change repainted the wrong pane.
+- **Huge task outputs are read as streams.** The in-pane preview did
+  `read_text().splitlines()[:cap]` and the JSON report did `read_text()[-limit:]`,
+  so both materialised the whole file before discarding nearly all of it —
+  measured at 889 MB and 494 MB of peak RSS on a 226 MB file. A 10 GB output
+  (which pipelines do produce) would have exhausted the host before a line
+  appeared. Both now cap while reading: on a 9.3 GB file they return in ~2 ms
+  with peak RSS flat at 43 MB, and previewing it in the UI takes 0.68 s.
+  Paging with `L` was never affected — `less` is handed seekable files directly,
+  and opens a 9.3 GB log at its tail in 16 ms.
+- **File previews grow as you scroll.** The pane used to decide up front how
+  much of a file to materialise, and `F` ("full file") loaded up to 200,000
+  lines in one go: on a 159 MB output that took **42 s and 719 MB of RSS, and
+  still showed only a tenth of the file**, with no way to reach the rest
+  in-pane — while the footer claimed it was "the whole file". Reaching the
+  bottom now pulls in the next chunk, the way `less` streams. The same file
+  opens in **0.35 s**, and twelve screens of scrolling cost 73 MB. `F` is now a
+  bigger first bite rather than a different mechanism, and the run log's
+  scroll-up backfill is unchanged.
+- **Task logs backfill on scroll-up too.** They open at the tail (a runaway
+  task can write gigabytes to `.command.log`) and scrolling to the top pulls in
+  the previous chunk, the way the run log already did. Small logs are unaffected
+  — they still load whole.
+- **S3/GCS reads are bounded.** `remote_cat` buffered the entire object through
+  the CLI and then stored it in a cache that never releases — for callers that
+  only ever want the last 20 KB. It now streams and keeps a bounded tail.
+- **The log scans no longer slurp the log.** `parse_log` runs on every refresh
+  tick of a live run and `read_text().splitlines()` cost ~3.7x the file's size
+  in peak RSS — 600 MB on a 161 MB `.nextflow.log`, every second — for a pass
+  that never looks backwards. `parse_log` and `parse_errors` now stream:
+  **600 MB → 42 MB**, and slightly faster. `parse_errors` became a state
+  machine, with a cap so a malformed log with no timestamps can't turn one
+  error block into the whole file.
+- **`.command.sh` and the log follower are bounded too.** `_read_all` seeked
+  instead of reading a whole script to keep its last 20 KB, and the follower
+  pulled every byte appended since the last tick — a task dumping gigabytes into
+  `.command.log` dragged all of it into the pane. It now catches up to the
+  newest 4 MB.
+- **`less` now says how to leave it.** Its status line reads
+  `q quit / search G end h help`. Esc looks like it should work — it is what the
+  TUI itself uses to step back — but it cannot be rebound: ESC is the first byte
+  of every arrow and function key, so less waits after a lone ESC (the binding
+  never fires) while a Down arrow's `ESC [ B` *does* match it and kills the
+  pager. Measured both ways; saying how to quit is the only safe fix.
+- **Quitting `less` on a huge file took a minute.** Landing at end-of-file makes
+  less number every line, and `q` blocks until that finishes. On a 10 GB task
+  output `less -R +G` painted the tail in 0.11 s and then took **56 s to exit**,
+  which looked exactly like a frozen TUI; pressing `G` in an ordinary `less -R`
+  cost 52 s on the way out. Files past 32 MB now get `-n`, and both quit in
+  0.2 s. Below that, line numbers stay on, so `=`, `v` and `1234G` keep working
+  where counting is free. Found by driving the real binary against a 10 GB file
+  in a live nf-core/sarek work dir.
 
 ### Packaging
 

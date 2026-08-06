@@ -29,12 +29,14 @@ import gzip
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -53,9 +55,23 @@ REFRESH_SECONDS = 1.0
 RUNLOG_TAIL = 400_000   # bytes of .nextflow.log to read for the initial tail
 RUNLOG_MAX_LINES = 600  # lines loaded per step (renders fast + reliably)
 RUNLOG_CHUNK = 200_000  # bytes read per backfill step when scrolling up
+# Task logs are usually small enough to load whole; these bounds only bite on a
+# runaway .command.log, which then backfills on scroll like the run log.
+TASKLOG_CHUNK = 1_000_000
+TASKLOG_MAX_LINES = 5_000
 VIEW_MAX_LINES = 2_000  # in-pane preview cap for host reads (text / gz)
 BAM_PREVIEW_LINES = 500 # smaller cap for container-decoded BAM/CRAM/BCF (faster)
-FULL_MAX_LINES = 200_000  # cap for the in-pane "full file" (F) — bounds memory
+# How much `F` pulls in one go. It used to be 200_000, which took 42s and
+# 719 MB on a 159 MB file and *still* showed only a tenth of it. Now that
+# scrolling to the bottom keeps loading (see _preview_extend), F is just a
+# bigger first bite, and the rest of the file is reachable either way.
+FULL_MAX_LINES = 20_000
+# Above this, hand less `-n`: numbering every line of a big file is what makes
+# quitting it take a minute (see pager_flags). ~0.17s of counting at this size.
+LESS_LINENUM_MAX = 32 * 1024 * 1024
+# Most a follower will pull in one tick, so a task dumping gigabytes into
+# .command.log can't drag the whole lot into the pane (see Follower.read_new).
+FOLLOW_MAX_CATCHUP = 4 * 1024 * 1024
 
 # Lines we care about in .nextflow.log:
 #   ... [bf/407183] Submitted process > NFCORE:...:SRA_FASTQ_FTP (tag)
@@ -143,6 +159,10 @@ REMOTE_TOOLS = {
            "ls": ["gcloud", "storage", "ls", "{uri}/"]},
 }
 REMOTE_TIMEOUT = 30
+# Most of an object kept in memory (and in _remote_cache) by remote_cat.
+# Comfortably above every caller's own limit, the largest being the in-pane
+# preview at VIEW_MAX_LINES * 200.
+REMOTE_CAT_MAX = 1_000_000
 _remote_cache: dict[tuple[str, str], object] = {}
 
 
@@ -162,8 +182,60 @@ def _run_remote(argv: list[str], uri: str) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def _run_remote_tail(argv: list[str], uri: str,
+                     max_chars: int = REMOTE_CAT_MAX) -> str | None:
+    """Run a remote `cat` and keep only its last `max_chars`.
+
+    Not `subprocess.run(capture_output=True)`: that buffers the whole object, so
+    a multi-gigabyte task output in S3 was held in memory in full — and then
+    stored in `_remote_cache`, which never releases it — to serve a caller that
+    wants the last few KB. The transfer itself is unavoidable (object stores
+    have no "tail"), but the memory is not.
+    """
+    cmd = [a.replace("{uri}", uri) for a in argv]
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, OSError):
+        return None
+    buf = b""
+    deadline = time.monotonic() + REMOTE_TIMEOUT
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                p.kill()
+                return None
+            if not select.select([p.stdout], [], [], min(left, 1.0))[0]:
+                continue
+            chunk = p.stdout.read1(65536)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > max_chars * 4:      # bytes; margin for multibyte UTF-8
+                buf = buf[-max_chars * 2:]
+        rc = p.wait(timeout=5)
+    except Exception:                          # noqa: BLE001
+        p.kill()
+        return None
+    finally:
+        if p.stdout is not None:
+            try:
+                p.stdout.close()
+            except OSError:
+                pass
+    if rc != 0:
+        return None
+    text = buf.decode("utf-8", errors="replace")
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
 def remote_cat(uri: str, limit: int = 20_000) -> str | None:
-    """Object contents as text, or None if absent or unreadable."""
+    """The tail of an object, as text, or None if absent or unreadable.
+
+    What is cached is the bounded tail, not the object: REMOTE_CAT_MAX is above
+    every caller's `limit`, so this is what they'd have got from the full text.
+    """
     key = ("cat", uri)
     if key in _remote_cache:
         got = _remote_cache[key]
@@ -171,7 +243,7 @@ def remote_cat(uri: str, limit: int = 20_000) -> str | None:
     spec = remote_tool(remote_scheme(uri))
     if spec is None:
         return None
-    out = _run_remote(spec["cat"], uri)
+    out = _run_remote_tail(spec["cat"], uri)
     _remote_cache[key] = out if out is not None else 0
     return None if out is None else out[-limit:]
 
@@ -234,6 +306,24 @@ def is_done(t: "Task") -> bool:
     return t.status.upper() in ("COMPLETED", "CACHED", "STORED")
 
 
+def iter_lines(path: Path) -> Iterator[str]:
+    """Yield a text file's lines (newline stripped), one at a time.
+
+    The reason this exists rather than `read_text().splitlines()`: the log scans
+    below run on every refresh tick of a live run, and a long pipeline's
+    .nextflow.log reaches hundreds of MB. Slurping one measured ~3.7x its size
+    in peak RSS — 600 MB on a 161 MB log — for a pass that never looks
+    backwards. Streaming holds a line at a time. A missing or unreadable file
+    yields nothing, matching the callers' existing "return empty" behaviour.
+    """
+    try:
+        with path.open("r", errors="replace") as fh:
+            for raw in fh:
+                yield raw.rstrip("\n")
+    except OSError:
+        return
+
+
 def parse_log(log_file: Path) -> list[Task]:
     """Parse a .nextflow.log into a list of Tasks, keyed by short hash.
 
@@ -245,7 +335,7 @@ def parse_log(log_file: Path) -> list[Task]:
     seen = 0
     if not log_file.exists():
         return []
-    for line in log_file.read_text(errors="replace").splitlines():
+    for line in iter_lines(log_file):
         m = _HANDLER_RE.search(line)
         if m:
             key = _short_hash(m["workdir"].strip())
@@ -406,6 +496,9 @@ def progress_of(tasks: list[Task], window: float = 300.0,
 _ERR_START_RE = re.compile(r"ERROR .*? - Error executing process > '(?P<name>.+)'")
 _TIMESTAMPED_RE = re.compile(r"^[A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ ")
 ERROR_MAX_LINES = 120
+# Guard for a malformed log with no timestamps: without it one "block" could
+# swallow the entire file. Far above any real Nextflow error report.
+ERROR_BLOCK_MAX_LINES = 5_000
 
 
 def parse_errors(log_file: Path) -> dict[str, str]:
@@ -415,21 +508,8 @@ def parse_errors(log_file: Path) -> dict[str, str]:
     without one fall back to being keyed by process name.
     """
     out: dict[str, str] = {}
-    try:
-        lines = log_file.read_text(errors="replace").splitlines()
-    except OSError:
-        return out
-    i, n = 0, len(lines)
-    while i < n:
-        m = _ERR_START_RE.search(lines[i])
-        if not m:
-            i += 1
-            continue
-        block = [_strip_ansi(lines[i].split(" - ", 1)[-1])]
-        j = i + 1
-        while j < n and not _TIMESTAMPED_RE.match(lines[j]):
-            block.append(_strip_ansi(lines[j]))
-            j += 1
+
+    def emit(name: str, block: list[str]) -> None:
         # the line after "Work dir:" is the path — that identifies the task
         key = None
         for k, line in enumerate(block):
@@ -439,13 +519,33 @@ def parse_errors(log_file: Path) -> dict[str, str]:
                     key = _short_hash(wd)
                 break
         text = "\n".join(block).rstrip()
-        name = m.group("name").strip()
         if key:
             out[key] = text
         # Also index by process name: a retried attempt fails under the same
         # name but a different work dir, and Nextflow reports only once.
         out.setdefault(f"name:{name}", text)
-        i = j
+
+    # Streamed for the same reason as parse_log — see iter_lines. A block runs
+    # from an "Error executing process" line to the next timestamped one, which
+    # needs no lookahead, only a little state.
+    name: str | None = None
+    block: list[str] = []
+    for line in iter_lines(log_file):
+        if name is not None:
+            if not _TIMESTAMPED_RE.match(line):
+                # A log with no timestamps at all would otherwise accumulate the
+                # whole file here; the report itself is only ERROR_MAX_LINES.
+                if len(block) < ERROR_BLOCK_MAX_LINES:
+                    block.append(_strip_ansi(line))
+                continue
+            emit(name, block)                 # this line ends the block …
+            name, block = None, []            # … and may start the next one
+        m = _ERR_START_RE.search(line)
+        if m:
+            name = m.group("name").strip()
+            block = [_strip_ansi(line.split(" - ", 1)[-1])]
+    if name is not None:
+        emit(name, block)
     return out
 
 
@@ -559,11 +659,15 @@ def _fill_cached_workdirs(log_file: Path, tasks: list[Task]) -> None:
 
 
 def _read_all(path: Path, limit: int = 20000) -> str:
-    try:
-        data = path.read_text(errors="replace")
-    except OSError as e:
-        return f"[cannot read {path.name}: {e}]"
-    return data[-limit:] if len(data) > limit else data
+    """The tail of a task's .command.sh, for the failure view.
+
+    Seeks like _tail_text rather than reading the file and slicing: a generated
+    .command.sh is usually a few KB, but a process that interpolates a large
+    channel into its script can produce a very big one, and nothing here knew
+    the difference.
+    """
+    text = _tail_text(path, limit)
+    return text if text is not None else f"[cannot read {path.name}]"
 
 
 def pager_bin() -> str | None:
@@ -577,6 +681,32 @@ def pager_bin() -> str | None:
     (see _pager_command), and a run log is never gzipped.
     """
     return "less" if shutil.which("less") else None
+
+
+# less's status line. `q` is the only way out — Esc cannot be rebound to quit,
+# because ESC is the first byte of every arrow/function key: less waits after a
+# lone ESC (so the binding never fires) while `ESC [ B` from a Down arrow *does*
+# match it and kills the pager. So instead of remapping, say how to leave.
+# `?e(END):%f.` prints "(END)" at end of file, otherwise the file name.
+PAGER_PROMPT = "q quit   / search   G end   h help   —   ?e(END):%f."
+
+
+def pager_flags(path: Path) -> str:
+    """less options for paging `path`: `-R`, plus `-n` once it gets big.
+
+    Reaching end-of-file makes less number every line of it, and **quitting waits
+    for that count to finish**. Measured on a 10 GB task output: `less -R +G`
+    painted the tail in 0.11s but then took 56s to exit, and pressing `G` in an
+    ordinary `less -R` cost 52s on the way out. With `-n` both quit in 0.2s.
+
+    The stall is invisible until a file is huge, so line numbers stay on below
+    the threshold, where counting is free and `=`, `v` and `1234G` keep working.
+    """
+    try:
+        big = path.stat().st_size > LESS_LINENUM_MAX
+    except OSError:
+        big = False
+    return "-Rn" if big else "-R"
 
 
 def read_back(path: Path, end: int, max_bytes: int = RUNLOG_CHUNK,
@@ -704,6 +834,34 @@ def parse_trace(workdir: str) -> Metrics:
     )
 
 
+def read_forward(path: Path, offset: int = 0,
+                 max_lines: int = VIEW_MAX_LINES) -> tuple[int, list[str], bool]:
+    """Read up to `max_lines` starting at byte `offset`.
+
+    Returns (next_offset, lines, at_eof) so a caller can resume exactly where it
+    stopped. That is what lets a preview grow as you scroll rather than deciding
+    up front how much of a file to materialise — the same thing `less` does, and
+    the reason it opens a 10 GB file instantly.
+
+    Binary handle, decoded per line: `tell()` is only dependable on a binary
+    file, and the offset has to stay exact from one chunk to the next.
+    """
+    out: list[str] = []
+    try:
+        with path.open("rb") as f:
+            f.seek(offset)
+            while len(out) < max_lines:
+                raw = f.readline()
+                if not raw:
+                    break
+                out.append(raw.rstrip(b"\n").decode("utf-8", errors="replace"))
+            pos = f.tell()
+            at_eof = not f.peek(1)
+    except OSError:
+        return offset, [], True
+    return pos, out, at_eof
+
+
 def looks_binary(path: Path, maxbytes: int = 8192) -> bool:
     try:
         with path.open("rb") as f:
@@ -738,6 +896,27 @@ def head_gzip(path: Path, lines: int) -> list[str]:
             return out
     except OSError as e:
         return [f"(cannot read gzip: {e})"]
+
+
+def head_text(path: Path, lines: int) -> list[str]:
+    """The first `lines` lines of a text file, read as a stream.
+
+    Deliberately not `read_text().splitlines()[:lines]`. That materialises the
+    entire file before throwing almost all of it away, which measured ~2.1x the
+    file's size in peak RSS and ~2.8s per GB: a 10 GB task output would have
+    exhausted a 24 GB host before showing a single line. Pipeline tasks do emit
+    files that big, so the cap has to apply while reading, not after.
+    """
+    try:
+        with path.open("r", errors="replace") as f:
+            out = []
+            for i, line in enumerate(f):
+                if i >= lines:
+                    break
+                out.append(line.rstrip("\n"))
+            return out
+    except OSError as e:
+        return [f"(cannot read: {e})"]
 
 
 def parse_container_run(workdir: str) -> tuple[str, list[str], str] | None:
@@ -877,6 +1056,11 @@ class Follower:
             self.pos = 0
         if size == self.pos:
             return ""
+        if size - self.pos > FOLLOW_MAX_CATCHUP:
+            # A chatty task can emit gigabytes between two ticks. Skip to the
+            # newest window rather than pulling all of it into the pane: this is
+            # a tail, so the recent end is the part worth showing.
+            self.pos = size - FOLLOW_MAX_CATCHUP
         try:
             with self.path.open("r", errors="replace") as fh:
                 fh.seek(self.pos)
@@ -1019,9 +1203,16 @@ class LogView(RichLog):
         super().watch_scroll_y(old_value, new_value)
         # Near the top of the run log? Pull in the previous chunk of the file.
         if new_value <= 2:
-            backfill = getattr(self.app, "_runlog_backfill", None)
-            if backfill is not None:
-                backfill()
+            for name in ("_runlog_backfill", "_tasklog_backfill"):
+                fn = getattr(self.app, name, None)
+                if fn is not None:
+                    fn()          # each is a no-op outside its own view
+        # Near the bottom of a file preview? Pull in the next chunk, so a big
+        # file keeps going as you scroll instead of stopping at a fixed cap.
+        if self.max_scroll_y and new_value >= self.max_scroll_y - 2:
+            extend = getattr(self.app, "_preview_extend", None)
+            if extend is not None:
+                extend()
 
 
 class FileList(OptionList):
@@ -1140,6 +1331,17 @@ class NfScope(App):
         self._runlog_lines: list[str] = []  # run-log lines currently loaded
         self._runlog_start: int = 0      # byte offset of the first loaded line
         self._backfilling = False        # guard: backfill moves scroll_y itself
+        # Where the open file preview stopped, so scrolling can resume from it.
+        self._view_path: Path | None = None
+        self._view_pos: int | None = None
+        self._view_eof: bool = True
+        self._extending = False
+        # Task-log counterpart of the run log's backfill state. That pane shows
+        # a *filtered* view of .command.log, so the raw lines are kept in order
+        # to re-emit them when a backfill rewrites the pane.
+        self._tasklog_raw: list[str] = []
+        self._tasklog_start: int = 0
+        self._tasklog_task: Task | None = None
 
     def compose(self) -> ComposeResult:
         yield NfHeader(id="hdr")
@@ -1549,7 +1751,19 @@ class NfScope(App):
         if self._tailer is None or not self._tailer.path.exists():
             log.write("(.command.log not written yet)")
             return
-        raw = self._tailer.read_new()   # whole file (pos started at 0)
+        # Load the tail, not the whole file: a runaway task can write gigabytes
+        # to .command.log. Scrolling to the top backfills the rest, exactly as
+        # the run log does.
+        try:
+            size = self._tailer.path.stat().st_size
+        except OSError:
+            size = 0
+        self._tasklog_start, self._tasklog_raw = read_back(
+            self._tailer.path, size, max_bytes=TASKLOG_CHUNK,
+            max_lines=TASKLOG_MAX_LINES)
+        self._tailer.pos = size          # live appends continue from the end
+        self._tasklog_task = t
+        raw = "\n".join(self._tasklog_raw)
         before = len(log.lines)
         self._emit_view(log, raw)
         if len(log.lines) == before:   # nothing matched this view
@@ -1771,6 +1985,73 @@ class NfScope(App):
         # Always open at the end: that's where a run reports how it went.
         log.scroll_end(animate=False)
 
+    def _tasklog_backfill(self) -> None:
+        """Scrolled to the top of a task log: prepend the previous chunk.
+
+        Same shape as _runlog_backfill, with one wrinkle: this pane shows a
+        *filtered* view (task output vs container noise), so the raw lines are
+        what gets prepended, and the viewport shifts by however many survive the
+        filter — not by how many were read.
+        """
+        if self.view not in ("task", "container") or self._backfilling:
+            return
+        t = self._tasklog_task
+        if t is None or self._tailer is None or self._tasklog_start <= 0:
+            return
+        self._backfilling = True
+        try:
+            start, older = read_back(self._tailer.path, self._tasklog_start,
+                                     max_bytes=TASKLOG_CHUNK,
+                                     max_lines=TASKLOG_MAX_LINES)
+            self._tasklog_start = start
+            if not older:
+                return
+            self._tasklog_raw = older + self._tasklog_raw
+            panes = self.query("#log")
+            if not panes:
+                return
+            log = panes.first(RichLog)
+            keep = log.scroll_y
+            before = len(log.lines)
+            log.auto_scroll = False
+            log.clear()
+            self._log_header(log, t)
+            self._emit_view(log, "\n".join(self._tasklog_raw))
+            added = len(log.lines) - before
+            log.scroll_y = keep + max(0, added)
+        finally:
+            self._backfilling = False
+
+    def _preview_extend(self) -> None:
+        """Scrolled to the bottom of a file preview: append the next chunk.
+
+        The forward counterpart to _runlog_backfill, and much cheaper: RichLog
+        appends natively, so nothing is rewritten and the viewport stays put.
+        Loading `F`-style in one go cost 42s and 719 MB on a 159 MB file and
+        still showed only a tenth of it; this walks the same file for the price
+        of one chunk at a time.
+        """
+        if self.view != "files" or self._extending:
+            return
+        p, pos = self._view_path, self._view_pos
+        if p is None or pos is None or self._view_eof:
+            return
+        self._extending = True
+        try:
+            new_pos, lines, at_eof = read_forward(p, pos, VIEW_MAX_LINES)
+            self._view_pos, self._view_eof = new_pos, at_eof
+            if not lines:
+                return
+            panes = self.query("#log")
+            if not panes:
+                return
+            log = panes.first(RichLog)
+            log.write("\n".join(lines))
+            if at_eof:
+                log.write("─── (end of file) ───")
+        finally:
+            self._extending = False
+
     def _runlog_backfill(self) -> None:
         """Scrolled near the top: prepend the previous chunk of the file.
 
@@ -1887,6 +2168,8 @@ class NfScope(App):
         `full` lifts the preview cap (the in-pane alternative to L, and the only
         way to see a whole file in the browser, where L can't run)."""
         self._last_file = p
+        # Drop any previous file's resume point until this one reports its own.
+        self._view_path, self._view_pos, self._view_eof = None, None, True
         # The files belong to the task whose dir we listed; prefer it. The tree
         # cursor (_selected) can be off a task leaf (e.g. on a process group),
         # which used to hand a None task to the container decode below.
@@ -1951,13 +2234,15 @@ class NfScope(App):
         # Text and gzip are read directly on the host — fast, no container.
         if tool is None:
             if gz:
+                # A gzip stream can't be resumed from a byte offset without
+                # decompressing from the start again, so this one stays capped.
                 out = head_gzip(p, text_cap)
-            else:
-                try:
-                    out = p.read_text(errors="replace").splitlines()[:text_cap]
-                except OSError as e:
-                    out = [f"(cannot read: {e})"]
-            self.call_from_thread(self._viewer_done, out or ["(empty)"], text_cap, p)
+                self.call_from_thread(self._viewer_done, out or ["(empty)"],
+                                      text_cap, p)
+                return
+            pos, out, at_eof = read_forward(p, 0, text_cap)
+            self.call_from_thread(self._viewer_done, out or ["(empty)"], text_cap,
+                                  p, pos, at_eof)
             return
         # BAM/CRAM/BCF: decode with a samtools/bcftools image + the task's mounts.
         spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
@@ -2010,11 +2295,15 @@ class NfScope(App):
         tool = decode_tool(p)
         if tool is None:
             if is_gzip(p):                        # must decompress; pipe is forced
-                return f"gzip -cdfq {shlex.quote(str(p))} 2>&1 | {pager} -R"
-            return f"{pager} -R {shlex.quote(str(p))}"   # seekable: opens instantly
+                return (f"gzip -cdfq {shlex.quote(str(p))} 2>&1 | "
+                        f"{pager} -R -P{shlex.quote(PAGER_PROMPT)}")
+            # seekable: opens instantly, and -n on a big one so quitting is too
+            return (f"{pager} {pager_flags(p)} -P{shlex.quote(PAGER_PROMPT)} "
+                    f"{shlex.quote(str(p))}")
         spec = self._viewer_spec(t.workdir, tool) if (t and t.workdir) else None
         if spec is None:
-            return f"echo '(no container found to decode {p.name})' | {pager} -R"
+            return (f"echo '(no container found to decode {p.name})' | "
+                    f"{pager} -R -P{shlex.quote(PAGER_PROMPT)}")
         engine, mounts, image = spec
         # No -i: the container must NOT read the terminal, or it steals the
         # keystrokes meant for the pager (samtools reads the file, not stdin).
@@ -2026,7 +2315,8 @@ class NfScope(App):
             # singularity/apptainer: `exec`, and none of docker's --rm/-w — the
             # inner `cd` already puts us in the work dir.
             parts = [engine, "exec"] + mounts + [image, "sh", "-c", inner]
-        return " ".join(shlex.quote(x) for x in parts) + f" 2>&1 | {pager} -R"
+        return (" ".join(shlex.quote(x) for x in parts)
+                + f" 2>&1 | {pager} -R -P{shlex.quote(PAGER_PROMPT)}")
 
     def _current_file(self) -> tuple[Task | None, Path | None]:
         if self.view != "files":
@@ -2076,7 +2366,9 @@ class NfScope(App):
         if self.view == "run":
             if self.log_file is None or not self.log_file.exists():
                 return
-            self._page(f"{pager} -R +G {shlex.quote(str(self.log_file))}")
+            self._page(f"{pager} {pager_flags(self.log_file)} +G "
+                       f"-P{shlex.quote(PAGER_PROMPT)} "
+                       f"{shlex.quote(str(self.log_file))}")
             return
         # Task / container view: page this task's own .command.log. It's the raw
         # file, so the container noise the task view filters out is included —
@@ -2093,7 +2385,8 @@ class NfScope(App):
             # Still running: open at the end to watch it. Finished: at the top,
             # where the error or the story starts.
             at_end = "" if (is_done(t) or is_failed(t)) else "+G "
-            self._page(f"{pager} -R {at_end}{shlex.quote(str(p))}")
+            self._page(f"{pager} {pager_flags(p)} {at_end}"
+                       f"-P{shlex.quote(PAGER_PROMPT)} {shlex.quote(str(p))}")
             return
         if self.view != "files":
             self.notify("switch to the files view (d), or g for the run log")
@@ -2114,7 +2407,8 @@ class NfScope(App):
         self._page(self._pager_command(t, p, pager))
 
     def _viewer_done(self, lines: list[str], cap: int = VIEW_MAX_LINES,
-                     path: Path | None = None) -> None:
+                     path: Path | None = None, pos: int | None = None,
+                     at_eof: bool = True) -> None:
         # A container decode can take seconds; by the time it lands the user may
         # have switched views or picked another file. Dropping a stale result is
         # right — otherwise it clobbers the run log with file content.
@@ -2134,11 +2428,20 @@ class NfScope(App):
         # Write the body in one shot — per-line writes are ~100x slower.
         if lines:
             log.write("\n".join(lines))
-        if len(lines) >= cap:
-            more = "scroll up/down — this is the whole file" if cap >= FULL_MAX_LINES \
-                else ("press F for the full file" if self.web
-                      else "press F for more in-pane, or L for less")
-            log.write(f"─── (showing {cap:,} lines — {more}; o opens the work dir) ───")
+        # Remember where this file stopped so scrolling to the bottom resumes
+        # from here. Only plain text can be resumed (see _run_viewer).
+        self._view_path, self._view_pos, self._view_eof = path, pos, at_eof
+        if pos is not None and not at_eof:
+            log.write(f"─── (showing {len(lines):,} lines — keep scrolling for "
+                      f"more{'' if self.web else ', or L for less'}; "
+                      f"o opens the work dir) ───")
+        elif len(lines) >= cap:
+            # Not resumable (gzip, or a container decode): the cap is the end of
+            # what this pane will show, so say so rather than implying more.
+            more = "press F for more in-pane" if not self.web else "capped here"
+            log.write(f"─── (showing {cap:,} lines — {more}"
+                      f"{'' if self.web else ', or L for less'}; "
+                      f"o opens the work dir) ───")
         # Scroll to the top after the content is laid out (doing it now, before
         # the virtual size is measured, doesn't stick).
         self.call_after_refresh(lambda: log.scroll_home(animate=False))
@@ -2188,7 +2491,12 @@ class NfScope(App):
                 else:
                     self._load_task(t)
             elif self.view != "files" and self.follow and self._tailer is not None:
-                self._emit_view(log, self._tailer.read_new())   # live append
+                new = self._tailer.read_new()                   # live append
+                if new:
+                    # Keep the raw list in step, or a backfill rewrite would
+                    # drop whatever arrived while we were following.
+                    self._tasklog_raw.extend(new.splitlines())
+                    self._emit_view(log, new)
             return
 
         # A process group (or nothing) is selected: show a summary, once.
@@ -2884,12 +3192,30 @@ LOG_CHARS = 20_000        # per captured file, so one runaway log can't dominate
 
 
 def _tail_text(path: Path, limit: int = LOG_CHARS) -> str | None:
-    """The last `limit` characters of a file, or None if it isn't there."""
+    """The last `limit` characters of a file, or None if it isn't there.
+
+    Seeks to the end rather than reading the file and slicing: a task can emit a
+    multi-gigabyte .command.out, and reading one whole costs ~2.1x its size in
+    RAM — enough to kill `--json` on a run that a pipeline produced happily.
+    """
     try:
-        data = path.read_text(errors="replace")
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            # 4 bytes is the longest a UTF-8 character gets, so this window
+            # always holds at least `limit` characters.
+            start = max(0, size - limit * 4)
+            f.seek(start)
+            buf = f.read()
     except OSError:
         return None
-    return data[-limit:] if len(data) > limit else data
+    text = buf.decode("utf-8", errors="replace")
+    if start > 0:
+        # The window opens mid-line; drop the fragment so the tail starts clean.
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+    return text[-limit:] if len(text) > limit else text
 
 
 def run_report(log_file: Path, *, logs: str = "failed",
