@@ -37,6 +37,7 @@ dev = ["pytest>=8"]
 nf-tui = "nf_tui:main"
 nf-tui-web = "nf_tui_serve:main"
 nf-tui-run = "nf_tui_run:main"
+nf-tui-mcp = "nf_tui_mcp:main"
 
 [project.urls]
 Homepage = "https://github.com/stavgrossfeld/nf-tui"
@@ -45,7 +46,7 @@ Issues = "https://github.com/stavgrossfeld/nf-tui/issues"
 Changelog = "https://github.com/stavgrossfeld/nf-tui/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
-py-modules = ["nf_tui", "nf_tui_serve", "nf_tui_run"]
+py-modules = ["nf_tui", "nf_tui_serve", "nf_tui_run", "nf_tui_mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -107,6 +107,16 @@ The first release published to PyPI: `uv tool install nf-tui`.
   where counting is free. Found by driving the real binary against a 10 GB file
   in a live nf-core/sarek work dir.
 
+### For agents
+
+- **`nf-tui-mcp`** serves a run over MCP (JSON-RPC on stdio, no SDK and no new
+  dependency): `list_runs`, `get_run`, `get_failures`, `get_task`,
+  `list_outputs`, `read_output`, `tail_log`, `search_log`. `get_failures`
+  answers "what broke and why" in one call, with each failure's cause, full
+  error report and `.command.*` logs. Every response is bounded, and
+  `read_output` pages by offset so an agent can walk a file far larger than its
+  context window.
+
 ### Packaging
 
 - Ships `nf_tui`, `nf_tui_serve` and `nf_tui_run`. The latter two were

@@ -12,7 +12,9 @@
 #
 # smooth_retime corrects vhs's dropped-frame timing, finds where the first task
 # appears (so the boot window needs no tuning), runs the boot fast, and eases
-# back to real time over a couple of seconds rather than cutting.
+# back to real time over a couple of seconds rather than cutting. It also caps
+# how long any one frame may sit, so a still stretch never reads as the clip
+# freezing (the previous cut held one frame for nine seconds).
 #
 # Expects docker running and the nf-core/sarek test data reachable.
 
@@ -59,6 +61,12 @@ Down
 Sleep 1s
 Enter
 Sleep 5s
+
+# ── The run log opens at the tail; page back and it keeps loading ──────────
+Type "g"
+Sleep 2500ms
+Type "bbbb"
+Sleep 3s
 
 Type "Q"
 Sleep 2s

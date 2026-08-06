@@ -22,6 +22,7 @@ from PIL import Image, ImageChops
 
 FPS = float(os.environ.get("FPS", 12))          # output frame rate
 MAX_SPEED = float(os.environ.get("MAX_SPEED", 14))   # rate over a still screen
+MAX_HOLD = float(os.environ.get("MAX_HOLD", 0.4))    # longest any frame may sit
 MIN_SPEED = float(os.environ.get("MIN_SPEED", 1))    # rate when it's busy
 BUSY = float(os.environ.get("BUSY", 0))         # >0 enables the activity signal
 OPEN_UNTIL = float(os.environ.get("OPEN_UNTIL", -1))  # <0 = detect from the picture
@@ -163,6 +164,55 @@ def retime(frames, durations, speeds):
     return picked
 
 
+def cap_holds(picked: list[int], fps: float, max_hold: float) -> list[int]:
+    """Never let one source frame sit on screen for longer than `max_hold`.
+
+    retime() samples by time, so over a still stretch it picks the *same* input
+    frame many times over. Those duplicates are identical, and GIF optimisation
+    merges identical neighbours into a single frame carrying their combined
+    delay — which is exactly what a viewer experiences as the clip freezing.
+    The previous demo had a frame held for 8.96s that way. Trimming each run
+    keeps the picture moving and makes the file smaller, instead of parking on
+    a dead screen.
+    """
+    limit = max(1, int(fps * max_hold))
+    out: list[int] = []
+    run, last = 0, None
+    for i in picked:
+        if i == last:
+            run += 1
+            if run > limit:
+                continue
+        else:
+            run, last = 1, i
+        out.append(i)
+    return out
+
+
+def cap_still_runs(images, fps: float, max_hold: float):
+    """Drop repeats of a *visually identical* frame beyond `max_hold`.
+
+    cap_holds() only catches the same source frame picked twice. Over a sped-up
+    stretch the sampler picks *different* frames that happen to render the same
+    (nothing on screen changed between them), and GIF optimisation merges those
+    into one frame carrying their combined delay — a 6.1s freeze survived the
+    index-level cap for exactly this reason. Comparing the rendered bytes is
+    what actually holds the guarantee.
+    """
+    limit = max(1, int(fps * max_hold))
+    kept, run, prev = [], 0, None
+    for im in images:
+        key = im.tobytes()
+        if key == prev:
+            run += 1
+            if run > limit:
+                continue
+        else:
+            run, prev = 1, key
+        kept.append(im)
+    return kept
+
+
 def main() -> None:
     src = sys.argv[1] if len(sys.argv) > 1 else "demo_raw.gif"
     dst = sys.argv[2] if len(sys.argv) > 2 else "demo.gif"
@@ -182,11 +232,12 @@ def main() -> None:
         print(f"  boot ends where tasks appear: {open_until:.1f}s "
               f"({'detected' if hit is not None else 'none found'})")
     speeds = speed_curve(frames, durations, open_until)
-    picked = retime(frames, durations, speeds)
+    picked = cap_holds(retime(frames, durations, speeds), FPS, MAX_HOLD)
 
     scale = WIDTH / frames[0].width
     size = (WIDTH, int(frames[0].height * scale) // 2 * 2)
     out = [frames[i].resize(size, Image.LANCZOS) for i in picked]
+    out = cap_still_runs(out, FPS, MAX_HOLD)
 
     # One shared palette, built from frames sampled across the whole clip.
     # Taking it from the first frame alone washed everything out: frame one is
@@ -209,6 +260,7 @@ def main() -> None:
           f"({os.path.getsize(dst)/1e6:.1f} MB)")
     print(f"  speed ranged {min(speeds):.1f}x–{max(speeds):.1f}x; "
           f"{fast*100//max(1,len(picked))}% of it sped up")
+    print(f"  no frame held longer than {MAX_HOLD:.2f}s")
 
 
 if __name__ == "__main__":

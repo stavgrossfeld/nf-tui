@@ -73,6 +73,12 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   selected task only, in the background, and cached. Everything from
   `.nextflow.log` — tasks, statuses, exit codes, progress, failure reports —
   needs no cloud access at all.
+- **MCP server for agents** — `nf-tui-mcp` exposes the whole thing as tools an
+  agent can call: `get_failures` answers "what broke and why" in one round trip
+  (cause, Nextflow's report, and the task's `.command.*` files), plus
+  `list_runs`, `get_run`, `get_task`, `list_outputs`, `read_output` (paged, so a
+  multi-gigabyte file is walkable), `tail_log` and `search_log`. Speaks JSON-RPC
+  over stdio directly — no SDK, no extra dependency.
 - **Web mode** — the same UI in a browser via `nf-tui-web`, streamed with
   [textual-serve](https://github.com/Textualize/textual-serve). There is no
   terminal for `less` in a browser, so scrolling is how you read a big file
@@ -120,6 +126,27 @@ Press `K` in nf-tui to stop a pipeline it launched (it asks first). That sends
 `SIGTERM`, which is the signal Nextflow handles: its handler kills the running
 tasks, and on a scheduler cancels the jobs it queued. `SIGINT` is ignored, and
 `kill -9` skips the handler and strands submitted jobs.
+
+## Agents (MCP)
+
+`nf-tui-mcp` serves the run over MCP, so an agent can diagnose a pipeline
+without a terminal. Point a client at the command — for Claude Code:
+
+```bash
+claude mcp add nf-tui -- nf-tui-mcp
+```
+
+or in a client's config file:
+
+```json
+{"mcpServers": {"nf-tui": {"command": "nf-tui-mcp"}}}
+```
+
+Then ask it to look at a run. `get_failures` is the one to reach for first: it
+returns every failed task with the cause, Nextflow's full error report and that
+task's `.command.err` / `.command.log` / `.command.sh` in a single call.
+Responses are bounded so one call can't flood a context window, and
+`read_output` pages with a `next_offset` you feed straight back in.
 
 ## JSON output
 
