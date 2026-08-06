@@ -234,3 +234,31 @@ def test_stdio_loop_end_to_end(run_dir):
     assert [m["id"] for m in lines] == [1, 2], "a notification must not reply"
     payload = json.loads(lines[1]["result"]["content"][0]["text"])
     assert payload["failed_count"] == 1
+
+
+def test_help_exits_without_reading_stdin():
+    """A stdio server that blocks on `--help` is a bad first meeting."""
+    p = subprocess.run(
+        [sys.executable, str(Path(__file__).parent.parent / "nf_tui_mcp.py"),
+         "--help"],
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    assert p.returncode == 0
+    assert "MCP" in p.stdout and "get_failures" in p.stdout
+
+
+def test_tools_flag_prints_schemas():
+    p = subprocess.run(
+        [sys.executable, str(Path(__file__).parent.parent / "nf_tui_mcp.py"),
+         "--tools"],
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    assert p.returncode == 0
+    specs = json.loads(p.stdout)
+    assert {t["name"] for t in specs} == set(mcp.HANDLERS)
+
+
+def test_unexpected_argument_is_rejected():
+    p = subprocess.run(
+        [sys.executable, str(Path(__file__).parent.parent / "nf_tui_mcp.py"),
+         "--nope"],
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    assert p.returncode == 2

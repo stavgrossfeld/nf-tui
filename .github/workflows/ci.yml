@@ -45,3 +45,8 @@ jobs:
           /tmp/clean/bin/nf-tui --help
           /tmp/clean/bin/nf-tui-web --help
           /tmp/clean/bin/nf-tui-run --help
+          /tmp/clean/bin/nf-tui-mcp --help
+          # the MCP server is a stdio protocol server, so --help alone proves
+          # little: check it actually answers a JSON-RPC initialize.
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
+            | /tmp/clean/bin/nf-tui-mcp | grep -q '"serverInfo"'

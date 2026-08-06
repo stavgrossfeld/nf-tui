@@ -430,12 +430,45 @@ def handle(msg: dict) -> dict | None:
     return _error(req_id, -32601, f"method not found: {method}")
 
 
-def main() -> int:
+USAGE = """\
+nf-tui-mcp — serve a Nextflow run to an agent over MCP.
+
+This is a server, not an interactive command: it speaks JSON-RPC 2.0 over
+stdin/stdout and is meant to be launched by an MCP client, not run by hand.
+
+  claude mcp add nf-tui -- nf-tui-mcp
+
+or, in a client's config:
+
+  {"mcpServers": {"nf-tui": {"command": "nf-tui-mcp"}}}
+
+Tools: %s
+
+Options:
+  -h, --help     show this and exit
+  --tools        print the tool schemas as JSON and exit
+""" % ", ".join(t["name"] for t in TOOLS)
+
+
+def main(argv: list[str] | None = None) -> int:
     """Read newline-delimited JSON-RPC on stdin, write responses on stdout.
 
     Nothing may go to stdout except protocol messages — a stray print would
     corrupt the stream — so diagnostics go to stderr.
     """
+    args = sys.argv[1:] if argv is None else argv
+    # Without this, `nf-tui-mcp --help` would sit waiting on stdin forever,
+    # which is a poor way to meet a command.
+    if any(a in ("-h", "--help") for a in args):
+        print(USAGE)
+        return 0
+    if "--tools" in args:
+        print(json.dumps(TOOL_SPECS, indent=2))
+        return 0
+    if args:
+        print(f"unexpected argument: {args[0]}\n", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
+        return 2
     for raw in sys.stdin:
         raw = raw.strip()
         if not raw:
