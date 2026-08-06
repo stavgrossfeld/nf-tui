@@ -28,7 +28,7 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 45ms
 
 Hide
-Type "export PATH=$HOME/.local/bin:$PATH; rm -rf ~/scratch/demo_sarek; mkdir -p ~/scratch/demo_sarek; cd ~/scratch/demo_sarek; docker run --rm $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 samtools) true >/dev/null 2>&1; clear"
+Type "export PATH=$HOME/.local/bin:$PATH; rm -rf ~/scratch/demo_sarek; mkdir -p ~/scratch/demo_sarek; cd ~/scratch/demo_sarek; for i in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -i samtools); do docker run --rm $i true >/dev/null 2>&1; done; clear"
 Enter
 Sleep 2s
 Show
@@ -58,17 +58,27 @@ Sleep 260ms
 Down
 Sleep 260ms
 Down
+Sleep 260ms
 Sleep 700ms
 
 # ── Sort by peak memory: the heaviest process floats to the top ────────────
-# Also how the demo finds mark duplicates on a *live* run without searching.
+# Also how the demo reaches mark duplicates on a *live* run without searching.
 # Counting scroll steps cannot work here: the tree follows the order Nextflow
 # announced its tasks, which differs run to run. Sorting does not care — mark
-# duplicates peaks at 4.4 GB, several times anything else.
+# duplicates peaks near 5 GB, several times anything else.
+#
+# Nothing may move the cursor before this. `e` (jump to a failure) used to run
+# here and threw it tens of lines down the tree, which the Ups below could not
+# climb back from — the clip then opened a process group and showed an empty
+# file list.
 Type "s"
 Sleep 1400ms
 Type "s"
 Sleep 1800ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
 Up
 Sleep 190ms
 Up
@@ -96,9 +106,9 @@ Sleep 900ms
 # ── Its task log ───────────────────────────────────────────────────────────
 # .command.log, with the container-pull and JVM noise filtered out.
 Type "t"
-Sleep 4s
+Sleep 3500ms
 
-# ── Its outputs — and the BAM read through its own container ───────────────
+# ── Its outputs, and the BAM ───────────────────────────────────────────────
 Type "d"
 Sleep 1600ms
 Down
@@ -106,24 +116,22 @@ Sleep 900ms
 Down
 Sleep 1s
 Enter
-# Generous on purpose: this is a real `docker run` + samtools decode, and a
-# cold start under vhs's render load takes several seconds. Overshooting costs
-# nothing now — cap_still_runs squeezes whatever is left standing still.
-Sleep 9s
+# Generous on purpose: a real `docker run` + samtools decode, and a cold start
+# under vhs's render load takes seconds. Overshooting costs nothing — the
+# retimer squeezes whatever ends up standing still. (At 9s the pane was still
+# reading "… loading …" when L took over.)
+Sleep 15s
 
-# ── The run log: opens at the tail, pages back and keeps loading ───────────
-Type "g"
-Sleep 1400ms
-Type "bbbb"
-Sleep 2200ms
-
-# ── What broke, and why ────────────────────────────────────────────────────
-# Last, because it needs the run to have finished failing: pressed earlier it
-# found nothing, since MULTIQC had not fallen over yet. e jumps to the next
-# failed task and leads with Nextflow's own report — cause, exit status, and
-# the .command.sh that ran.
-Type "e"
-Sleep 4500ms
+# ── The same BAM in less, full screen ──────────────────────────────────────
+# L hands it to the pager: samtools decoding into less, paged lazily.
+Type "L"
+Sleep 8s
+Space
+Sleep 2s
+Space
+Sleep 2500ms
+Type "q"
+Sleep 1800ms
 
 Type "Q"
 Sleep 1500ms
