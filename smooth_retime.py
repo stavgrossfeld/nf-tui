@@ -189,6 +189,12 @@ def cap_holds(picked: list[int], fps: float, max_hold: float) -> list[int]:
     return out
 
 
+def _near(a, b, threshold: float = 0.6) -> bool:
+    """Do two thumbnails look the same? Mean absolute pixel difference."""
+    h = ImageChops.difference(a, b).histogram()
+    return sum(i * c for i, c in enumerate(h)) / (a.width * a.height) < threshold
+
+
 def cap_still_runs(images, fps: float, max_hold: float):
     """Drop repeats of a *visually identical* frame beyond `max_hold`.
 
@@ -202,13 +208,17 @@ def cap_still_runs(images, fps: float, max_hold: float):
     limit = max(1, int(fps * max_hold))
     kept, run, prev = [], 0, None
     for im in images:
-        key = im.tobytes()
-        if key == prev:
+        # Compared with a tolerance, not byte-for-byte: a blinking cursor
+        # changes a single cell, which is enough for exact equality to call two
+        # dead frames "different" and let a stretch of them through.
+        small = im.convert("L").resize((160, 90))
+        same = prev is not None and _near(small, prev)
+        if same:
             run += 1
             if run > limit:
                 continue
         else:
-            run, prev = 1, key
+            run, prev = 1, small
         kept.append(im)
     return kept
 

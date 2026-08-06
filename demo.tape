@@ -38,52 +38,49 @@ Sleep 800ms
 Enter
 
 # Nextflow boots: the tree is empty and the run log streams its startup.
+# smooth_retime runs everything up to the first task at 14x, so this wait costs
+# the viewer a couple of seconds rather than the minute it really takes.
 Sleep 30s
 
-# ── The first tasks appear and start completing, live ──────────────────────
-Sleep 26s
+# ── The first tasks appear and start completing ────────────────────────────
+Sleep 20s
 
-# ── What's actually running right now ──────────────────────────────────────
-Type "p"
-Sleep 8s
+# ── Straight into them: step down the tree, then open a finished task's files
+# No passive staring from here on. A still screen is dead air the retimer will
+# squeeze out anyway, so every beat below changes something.
+Down
+Sleep 600ms
+Down
+Sleep 600ms
+Down
+Sleep 600ms
+Down
+Sleep 800ms
 
-Escape
-Sleep 4s
-
-# ── Walk the tree, then the outputs of a finished task ─────────────────────
-# Beats here are kept *moving* on purpose. smooth_retime compresses a screen
-# that isn't changing (that is how the dead air goes), so a long Sleep on a
-# still pane gets squeezed to nothing. Stepping through tasks and files makes
-# every frame differ, which is what survives into the cut.
-Down
-Sleep 700ms
-Down
-Sleep 700ms
-Down
-Sleep 700ms
-Down
-Sleep 900ms
-
-# Step onto a completed task: pressing d on a process group shows an empty
-# file list, since a group has no work dir of its own.
 Type "d"
-Sleep 1600ms
+Sleep 1400ms
 
-# Arrow down the file list — each move repaints the preview beside it.
+# Arrow the file list — each move repaints the preview beside it.
 Down
-Sleep 1300ms
+Sleep 1100ms
 Down
-Sleep 1300ms
+Sleep 1100ms
 Down
-Sleep 1300ms
+Sleep 1100ms
 Enter
-Sleep 2s
+Sleep 1800ms
+
+# ── What is running right now ──────────────────────────────────────────────
+Type "p"
+Sleep 2500ms
+Escape
+Sleep 800ms
 
 # ── The run log opens at the tail; page back and it keeps loading ──────────
 Type "g"
-Sleep 2500ms
+Sleep 1500ms
 Type "bbbb"
-Sleep 3s
+Sleep 2500ms
 
 Type "Q"
 Sleep 2s
