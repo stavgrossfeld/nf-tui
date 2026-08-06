@@ -33,44 +33,66 @@ Enter
 Sleep 2s
 Show
 
-# ── Prefix any nextflow command to launch it and watch it ──────────────────
-Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out -resume"
+# ── Point it at a run and go ───────────────────────────────────────────────
+# A finished run, opened directly. Deliberate: the tree's order follows the
+# order Nextflow announced the tasks, which differs from run to run, so
+# counted scrolling is only reliable against a fixed log. (`nf-tui nextflow
+# run ...` launches and watches one live — that is in the README.)
+Type "nf-tui .nextflow.log"
 Sleep 800ms
 Enter
-
-# Nextflow starts and the tree fills in. smooth_retime runs everything up to
-# the first task at 14x, so this costs the viewer a moment, not the real wait.
-Sleep 26s
-
-# ── What broke, and why ────────────────────────────────────────────────────
-# e jumps to the next failed task and leads with Nextflow's own error report:
-# the cause, the exit status, and the .command.sh that ran.
-Type "e"
 Sleep 3s
 
-# ── One task in detail: mark duplicates ────────────────────────────────────
-# The filter matches the whole process path, so "markdup" also catches
-# SAMTOOLS_STATS and MOSDEPTH (both sit under BAM_MARKDUPLICATES) — three
-# groups, and one Down then lands on a group header rather than a task, which
-# shows an empty file list. "gatk4_markdup" matches exactly one.
-Type "/gatk4_markdup"
-Sleep 1200ms
-Enter
-Sleep 600ms
+# ── Walk down the tree to mark duplicates ──────────────────────────────────
+# Just scrolling, no search. One key at a time with a gap: `Down 4` sends
+# four presses back to back and Textual does not register them all, which
+# left the cursor short of the task and showed an empty file list.
 Down
-Sleep 900ms
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Down
+Sleep 260ms
+Sleep 700ms
 
-# its task output (.command.log, with container noise filtered out)
+# ── Its task log ───────────────────────────────────────────────────────────
+# .command.log, with the container-pull and JVM noise filtered out.
 Type "t"
-Sleep 2200ms
-
-# the raw container log behind it
-Type "c"
-Sleep 1600ms
+Sleep 4s
 
 # ── Its outputs — and the BAM read through its own container ───────────────
 Type "d"
-Sleep 1400ms
+Sleep 1600ms
 Down
 Sleep 900ms
 Down
@@ -86,6 +108,14 @@ Type "g"
 Sleep 1400ms
 Type "bbbb"
 Sleep 2200ms
+
+# ── What broke, and why ────────────────────────────────────────────────────
+# Last, because it needs the run to have finished failing: pressed earlier it
+# found nothing, since MULTIQC had not fallen over yet. e jumps to the next
+# failed task and leads with Nextflow's own report — cause, exit status, and
+# the .command.sh that ran.
+Type "e"
+Sleep 4500ms
 
 Type "Q"
 Sleep 1500ms

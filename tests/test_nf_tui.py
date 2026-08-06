@@ -2858,3 +2858,40 @@ def test_resumed_run_resolves_cached_tasks_with_a_config_set_workdir(tmp_path):
     assert all(t["cached"] for t in tasks)
     resolved = [t for t in tasks if t["workdir"] and Path(t["workdir"]).is_dir()]
     assert len(resolved) == 2, f"cached tasks unresolved: {tasks}"
+
+
+def test_tree_leaf_data_is_refreshed_when_a_task_finishes(tmp_path):
+    """A leaf built while its task was SUBMITTED used to keep that Task object
+    forever, so `e` reported "no failed tasks" on a run whose header counted
+    two — the header reparses, the tree did not."""
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text("[ab/cccccc] Submitted process > P:BOOM (s1)\n")
+
+    async def steps(app, pilot):
+        await pilot.pause()
+        node = app._task_nodes.get("ab/cccccc")
+        assert node is not None, app._task_nodes
+        assert not is_failed(node.data), "should not look failed yet"
+
+        # the task now fails
+        log.write_text("[ab/cccccc] Submitted process > P:BOOM (s1)\n"
+                       f"~> TaskHandler[id: 1; name: P:BOOM (s1); status: "
+                       f"COMPLETED; exit: 139; error: -; workDir: {wd}]\n")
+        app._force_refresh = True
+        app.action_refresh()
+        await pilot.pause()
+
+        node = app._task_nodes.get("ab/cccccc")
+        assert is_failed(node.data), (
+            f"leaf data went stale: status={node.data.status} exit={node.data.exit}")
+
+        notes: list = []
+        app.notify = lambda msg, **k: notes.append(msg)
+        app.action_next_failed()
+        await pilot.pause()
+        assert not any("no failed tasks" in n for n in notes), notes
+        return True
+
+    assert drive(NfScope(tmp_path), steps)

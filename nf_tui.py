@@ -1709,12 +1709,19 @@ class NfScope(App):
                     self._task_nodes[t.hash] = pnode.add_leaf(label, data=t)
                 else:
                     leaf.set_label(label)
+                    # Re-point at the freshly parsed Task, not just the label.
+                    # A leaf created while its task was SUBMITTED otherwise kept
+                    # that object for the rest of the session, so anything
+                    # reading node.data saw a task that never finished — `e`
+                    # reported "no failed tasks" on a run whose header said two.
+                    leaf.data = t
 
     def _selected(self) -> Task | None:
         node = self.query_one("#tasks", Tree).cursor_node
         if node is None or not isinstance(node.data, Task):
             return None
-        # node.data may be a stale Task object; return the freshest by hash.
+        # _sync_tree keeps node.data current; the by-hash lookup is belt and
+        # braces for a node built before the latest parse landed.
         return self._task_by_hash.get(node.data.hash, node.data)
 
     # ---- in-pane log (same pane, scrollable, live) -------------------------
