@@ -50,17 +50,34 @@ Sleep 8s
 Escape
 Sleep 4s
 
-# ── The outputs of a task that has finished ────────────────────────────────
-# Step onto a completed task first: pressing d on a process group shows an
-# empty file list, since a group has no work dir of its own.
-Down 2
-Sleep 1.5s
-Type "d"
-Sleep 5s
+# ── Walk the tree, then the outputs of a finished task ─────────────────────
+# Beats here are kept *moving* on purpose. smooth_retime compresses a screen
+# that isn't changing (that is how the dead air goes), so a long Sleep on a
+# still pane gets squeezed to nothing. Stepping through tasks and files makes
+# every frame differ, which is what survives into the cut.
 Down
-Sleep 1s
+Sleep 700ms
+Down
+Sleep 700ms
+Down
+Sleep 700ms
+Down
+Sleep 900ms
+
+# Step onto a completed task: pressing d on a process group shows an empty
+# file list, since a group has no work dir of its own.
+Type "d"
+Sleep 1600ms
+
+# Arrow down the file list — each move repaints the preview beside it.
+Down
+Sleep 1300ms
+Down
+Sleep 1300ms
+Down
+Sleep 1300ms
 Enter
-Sleep 5s
+Sleep 2s
 
 # ── The run log opens at the tail; page back and it keeps loading ──────────
 Type "g"

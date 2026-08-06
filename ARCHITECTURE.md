@@ -55,9 +55,18 @@ prefix — targeted, because scanning the whole tree on every refresh of a live
 run would be far too expensive. `index_workdirs()` does the whole-tree version
 once, for the cached case. Results are cached; a work dir never moves.
 
-**The root itself**, needed by the above, comes from `find_work_root()`:
-`-w` / `-work-dir` on the launch command, else the nf-core `workDir : <path>`
-banner line, else Nextflow's default `<launch dir>/work`.
+**The root itself**, needed by the above, comes from `find_work_root()`, in
+order: Nextflow's own `nextflow.Session - Work-dir: <path>` line, then `-w` /
+`-work-dir` on the launch command, then the nf-core `workDir : <path>` banner,
+then a completed task's work dir minus its last two components, and finally
+`<launch dir>/work`.
+
+The `Work-dir:` line leads because it is the value Nextflow actually *resolved*,
+not the one it was asked for — and it is the only one present when `workDir` is
+set in a `nextflow.config` rather than on the command line. That case used to
+fall through to the default: harmless for completed tasks, which carry their own
+path, but a `-resume` run resolved **nothing**, since cached tasks have no work
+dir of their own.
 
 ---
 

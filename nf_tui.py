@@ -128,6 +128,10 @@ def _line_time(line: str) -> float | None:
         return None
 
 
+# "... nextflow.Session - Work-dir: /path/to/work [Mac OS X]" — the trailing
+# bracket is the OS name, not part of the path.
+_WORKDIR_LINE_RE = re.compile(r"nextflow\.Session\s*-\s*Work-dir:\s*"
+                              r"(.+?)(?:\s+\[[^\]]*\])?\s*$")
 _REMOTE_RE = re.compile(r"^(s3|gs|az|https?|ftp)://", re.I)
 
 
@@ -571,11 +575,34 @@ def find_work_root(log_file: Path) -> str:
     intact: Path("s3://bucket/work") collapses the double slash to "s3:/bucket",
     which is not a URI anything can fetch.
     """
+    fallback = ""
     try:
         with log_file.open("r", errors="replace") as fh:
             for i, line in enumerate(fh):
                 if i > 400:
                     break
+                # Nextflow's own Session logs the *resolved* work dir near the
+                # top, whatever set it. That makes it the authoritative answer
+                # and the only one that survives `workDir` being set in a
+                # nextflow.config instead of on the command line — in which
+                # case the launch line carries no -w at all, and a resumed run
+                # (whose tasks have no workDir of their own) resolved nothing.
+                #   ... nextflow.Session - Work-dir: /scratch/wk [Mac OS X]
+                w = _WORKDIR_LINE_RE.search(line)
+                if w:
+                    val = w.group(1).strip()
+                    return (val if remote_scheme(val)
+                            else str(Path(val).expanduser()))
+                # A completed task's own work dir gives the root two levels up.
+                # Kept as a fallback for logs with no Work-dir line at all.
+                if not fallback:
+                    h = _HANDLER_RE.search(line)
+                    if h:
+                        wd = h["workdir"].strip()
+                        if not remote_scheme(wd):
+                            parent = Path(wd).parent.parent
+                            if str(parent) not in ("/", "."):
+                                fallback = str(parent)
                 if "$> nextflow" in line:
                     toks = _strip_ansi(line).split()
                     for flag in ("-w", "-work-dir", "--work-dir"):
@@ -594,7 +621,7 @@ def find_work_root(log_file: Path) -> str:
                         return b.group(1)
     except OSError:
         pass
-    return str(log_file.parent / "work")
+    return fallback or str(log_file.parent / "work")
 
 
 def index_workdirs(work_root: Path) -> dict[str, str]:

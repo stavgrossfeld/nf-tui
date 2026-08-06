@@ -2778,3 +2778,83 @@ def test_failed_decode_is_not_labelled_end_of_file(tmp_path):
         return True
 
     assert drive(NfScope(tmp_path), steps)
+
+
+# ---------------------------------------------------------------------------
+# Where the work tree is, when the launch command doesn't say. Setting
+# `workDir` in a nextflow.config is routine (shared/institutional configs do
+# it), and then the launch line carries no -w and there is no nf-core banner.
+# A resumed run in that setup resolved nothing at all: cached tasks have no
+# workDir of their own, so every log, output and metric went missing.
+# ---------------------------------------------------------------------------
+
+REAL_WORKDIR_LINE = ("Aug-06 13:07:36.237 [main] DEBUG nextflow.Session - "
+                     "Work-dir: {path} [Mac OS X]\n")
+
+
+def test_find_work_root_reads_nextflows_own_work_dir_line(tmp_path):
+    """Verbatim from a real log — Nextflow's Session logs the *resolved* work
+    dir whatever set it, which makes it the authoritative source."""
+    wk = tmp_path / "faraway" / "wk"
+    wk.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text("  $> nextflow run main.nf\n"
+                   + REAL_WORKDIR_LINE.format(path=wk))
+    assert nf_tui.find_work_root(log) == str(wk)
+
+
+def test_work_dir_line_survives_a_config_set_workdir(tmp_path):
+    """No -w on the command line and no banner: the case that was broken."""
+    wk = tmp_path / "elsewhere"
+    wk.mkdir()
+    log = tmp_path / ".nextflow.log"
+    log.write_text("  $> nextflow run main.nf -resume\n"
+                   + REAL_WORKDIR_LINE.format(path=wk))
+    assert nf_tui.find_work_root(log) == str(wk)
+    assert nf_tui.find_work_root(log) != str(tmp_path / "work")
+
+
+def test_work_dir_line_keeps_a_cloud_uri_intact(tmp_path):
+    log = tmp_path / ".nextflow.log"
+    log.write_text("Aug-06 13:07:36.237 [main] DEBUG nextflow.Session - "
+                   "Work-dir: s3://my-bucket/wk [Linux]\n")
+    assert nf_tui.find_work_root(log) == "s3://my-bucket/wk"
+
+
+def test_work_root_falls_back_to_a_handler_lines_work_dir(tmp_path):
+    """Older logs may carry no Work-dir line; a completed task's own work dir
+    still gives the root two levels up."""
+    wd = tmp_path / "somewhere" / "wk" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text("  $> nextflow run main.nf\n"
+                   f"~> TaskHandler[id: 1; name: P:A (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+    assert nf_tui.find_work_root(log) == str(tmp_path / "somewhere" / "wk")
+
+
+def test_work_root_still_defaults_when_the_log_says_nothing(tmp_path):
+    log = tmp_path / ".nextflow.log"
+    log.write_text("  $> nextflow run main.nf\nnothing useful here\n")
+    assert nf_tui.find_work_root(log) == str(tmp_path / "work")
+
+
+def test_resumed_run_resolves_cached_tasks_with_a_config_set_workdir(tmp_path):
+    """The end-to-end regression: a -resume log has no handler lines at all, so
+    every cached task depends on the work root being right."""
+    wk = tmp_path / "faraway" / "wk"
+    for h in ("d2/ed2a62c1331eb5dcb6042b035e7c42", "e8/44fb6b95ce4b2e066af3de"):
+        (wk / h).mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "  $> nextflow run main.nf -resume\n"
+        + REAL_WORKDIR_LINE.format(path=wk)
+        + "[d2/ed2a62] Cached process > MAKE (1)\n"
+        + "[e8/44fb6b] Cached process > MAKE (2)\n")
+    rep = nf_tui.run_report(log)
+    assert rep["work_dir"] == str(wk)
+    tasks = rep["tasks"]
+    assert len(tasks) == 2
+    assert all(t["cached"] for t in tasks)
+    resolved = [t for t in tasks if t["workdir"] and Path(t["workdir"]).is_dir()]
+    assert len(resolved) == 2, f"cached tasks unresolved: {tasks}"

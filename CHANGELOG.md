@@ -93,6 +93,16 @@ Install from the repository:
   pulled every byte appended since the last tick — a task dumping gigabytes into
   `.command.log` dragged all of it into the pane. It now catches up to the
   newest 4 MB.
+- **A `workDir` set in nextflow.config was not found.** `find_work_root` only
+  read `-w` off the launch command or an nf-core banner, so a run configured
+  the institutional way — `workDir = '/scratch/wk'` in a config file — fell
+  back to `<launch dir>/work`. Completed tasks were fine (their work dir is on
+  their own handler line), but a **`-resume` run resolved nothing at all**:
+  cached tasks carry no work dir, so every log, output and metric went missing.
+  Measured 0 of 2 cached tasks resolved. nf-tui now reads Nextflow's own
+  `nextflow.Session - Work-dir: ...` line, which is the *resolved* value
+  whatever set it, and falls back to deriving the root from a completed task's
+  work dir. 2 of 2, on a real run.
 - **`less` now says how to leave it.** Its status line reads
   `q quit / search G end h help`. Esc looks like it should work — it is what the
   TUI itself uses to step back — but it cannot be rebound: ESC is the first byte
