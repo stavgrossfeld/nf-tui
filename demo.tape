@@ -33,20 +33,18 @@ Enter
 Sleep 2s
 Show
 
-# ── Point it at a run and go ───────────────────────────────────────────────
-# A finished run, opened directly. Deliberate: the tree's order follows the
-# order Nextflow announced the tasks, which differs from run to run, so
-# counted scrolling is only reliable against a fixed log. (`nf-tui nextflow
-# run ...` launches and watches one live — that is in the README.)
-Type "nf-tui .nextflow.log"
+# ── Prefix any nextflow command to launch it and watch it live ────────────
+Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out -resume"
 Sleep 800ms
 Enter
-Sleep 3s
 
-# ── Walk down the tree to mark duplicates ──────────────────────────────────
-# Just scrolling, no search. One key at a time with a gap: `Down 4` sends
-# four presses back to back and Textual does not register them all, which
-# left the cursor short of the task and showed an empty file list.
+# The run starts and the tree fills in. smooth_retime runs everything up to the
+# first task at 14x, so this costs a moment rather than the real wait.
+Sleep 30s
+
+# ── Scroll the tree ────────────────────────────────────────────────────────
+# One key at a time with a gap: `Down 4` sends four presses back to back and
+# Textual does not register them all.
 Down
 Sleep 260ms
 Down
@@ -58,32 +56,40 @@ Sleep 260ms
 Down
 Sleep 260ms
 Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
 Sleep 700ms
+
+# ── Sort by peak memory: the heaviest process floats to the top ────────────
+# Also how the demo finds mark duplicates on a *live* run without searching.
+# Counting scroll steps cannot work here: the tree follows the order Nextflow
+# announced its tasks, which differs run to run. Sorting does not care — mark
+# duplicates peaks at 4.4 GB, several times anything else.
+Type "s"
+Sleep 1400ms
+Type "s"
+Sleep 1800ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Up
+Sleep 190ms
+Sleep 500ms
+Down
+Sleep 900ms
 
 # ── Its task log ───────────────────────────────────────────────────────────
 # .command.log, with the container-pull and JVM noise filtered out.
