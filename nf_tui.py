@@ -564,6 +564,46 @@ def error_summary(block: str) -> str:
     return lines[0] if lines else ""
 
 
+def command_error(block: str) -> str:
+    """The `Command error:` section of a Nextflow error report.
+
+    This is usually the actual reason a task died — the tool's own stderr —
+    where `Caused by:` only gives Nextflow's framing ("terminated with an error
+    exit status (1)"), which says what happened rather than why. A real example:
+    the Caused-by line said "exit status (1)" while this section said
+    `error during connect: ... docker.sock ... EOF`, i.e. the container runtime
+    had gone away.
+
+    Sections in the report start unindented and their content is indented, so
+    the block ends at the next unindented line.
+    """
+    out: list[str] = []
+    grabbing = False
+    for raw in block.splitlines():
+        if not grabbing:
+            if raw.strip() == "Command error:":
+                grabbing = True
+            continue
+        if raw.strip() and not raw.startswith((" ", "\t")):
+            break                       # the next section began
+        out.append(raw.strip())
+    text = "\n".join(out).strip()
+    return "" if text == "(empty)" else text
+
+
+def why_failed(block: str) -> str:
+    """The most informative one-liner available for a failure.
+
+    Prefers what the command itself printed; falls back to Nextflow's summary
+    when the command said nothing.
+    """
+    err = command_error(block)
+    if err:
+        first = next((l for l in err.splitlines() if l.strip()), "")
+        return first.strip()
+    return error_summary(block)
+
+
 def find_work_root(log_file: Path) -> str:
     """Where this run's work tree lives, as written — a path or an s3:// URI.
 
@@ -3360,6 +3400,11 @@ def run_report(log_file: Path, *, logs: str = "failed",
             block = errors.get(t.hash) or errors.get(f"name:{t.name}")
             if block:
                 entry["error"] = {"summary": error_summary(block),
+                                  # what the command itself printed — usually
+                                  # the actual reason, where summary is only
+                                  # Nextflow's "exit status (N)" framing
+                                  "command_error": command_error(block),
+                                  "why": why_failed(block),
                                   "report": block}
         want = logs == "all" or (logs == "failed" and is_failed(t))
         if want and t.workdir:

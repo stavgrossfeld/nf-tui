@@ -262,3 +262,30 @@ def test_unexpected_argument_is_rejected():
          "--nope"],
         capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
     assert p.returncode == 2
+
+
+def test_get_failures_says_why_not_just_the_exit_status(tmp_path):
+    """The whole point of the call: an agent should get the reason, not have to
+    parse it out of the report itself."""
+    wd = tmp_path / "work" / "bb" / ("2" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"~> TaskHandler[id: 1; name: P:BOOM (s1); status: COMPLETED; exit: 1; "
+        f"error: -; workDir: {wd}]\n"
+        "Jul-15 15:24:39.100 [main] ERROR nextflow.Nextflow - "
+        "Error executing process > 'P:BOOM (s1)'\n"
+        "\nCaused by:\n"
+        "  Process `P:BOOM (s1)` terminated with an error exit status (1)\n"
+        "\nCommand error:\n"
+        "  samtools: error while loading shared libraries: libcrypto.so.1.1\n"
+        f"\nWork dir:\n  {wd}\n"
+        "\nJul-15 15:24:40.000 [main] DEBUG nextflow.Session - Goodbye\n")
+
+    _, d = call("get_failures", run=str(tmp_path))
+    f = d["failures"][0]
+    assert f["why"] == "samtools: error while loading shared libraries: libcrypto.so.1.1"
+    assert "libcrypto" in f["command_error"]
+    # the old, less useful phrasing is still there for anything that wants it
+    assert "exit status (1)" in f["cause"]

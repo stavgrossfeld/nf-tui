@@ -144,6 +144,11 @@ def tool_get_failures(run: str) -> dict:
             "exit": t.get("exit"),
             "attempts": t.get("attempts"),
             "workdir": t.get("workdir"),
+            # `why` first: the command's own message, which is the answer to
+            # "why did this fail". `cause` is Nextflow's framing and often says
+            # no more than the exit status.
+            "why": err.get("why"),
+            "command_error": err.get("command_error"),
             "cause": err.get("summary"),
             "report": err.get("report"),
             "logs": t.get("logs"),

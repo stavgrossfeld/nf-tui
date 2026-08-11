@@ -161,7 +161,9 @@ nf-tui --json --watch 5 /path/to/run    # one object per line while it runs
 
 Each task carries its `hash`, `process`, `tag`, `status`, `state`
 (running / pending / done / failed / cached), `exit`, `workdir`, resource
-`metrics`, the failure `error` (cause plus Nextflow's full report), and its
+`metrics`, the failure `error` (`why` — what the command itself printed, which
+is the actual reason — plus `command_error`, Nextflow's `cause`, and its full
+`report`), and its
 `logs` — `.command.sh`, `.command.out`, `.command.err`, `.command.log`. By
 default only failed tasks carry logs, which is the debugging case and cheap;
 `--logs all` includes them everywhere.

@@ -120,6 +120,15 @@ Install from the repository:
 
 ### For agents
 
+- **Failures say *why*, not just the exit status.** `Caused by:` is Nextflow's
+  framing and often reports no more than "terminated with an error exit status
+  (1)". The reason is what the command itself printed, which was buried in the
+  middle of the report. A failure now carries `why` (the command's own first
+  line) and `command_error` (the whole section) alongside the existing `cause`
+  and `report`. On a real run this turned "exit status (1)" into
+  `error during connect: ... docker.sock ... EOF` — the container runtime had
+  died, which nothing in the old summary said.
+
 - **`nf-tui-mcp`** serves a run over MCP (JSON-RPC on stdio, no SDK and no new
   dependency): `list_runs`, `get_run`, `get_failures`, `get_task`,
   `list_outputs`, `read_output`, `tail_log`, `search_log`. `get_failures`

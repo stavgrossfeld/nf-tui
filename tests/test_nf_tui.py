@@ -2895,3 +2895,89 @@ def test_tree_leaf_data_is_refreshed_when_a_task_finishes(tmp_path):
         return True
 
     assert drive(NfScope(tmp_path), steps)
+
+
+# ---------------------------------------------------------------------------
+# Why a task failed. `Caused by:` is Nextflow's framing and often says no more
+# than the exit status; the answer is what the command itself printed. On a
+# real run the Caused-by line read "terminated with an error exit status (1)"
+# while Command error read "error during connect: ... docker.sock ... EOF" —
+# the container runtime had gone away.
+# ---------------------------------------------------------------------------
+
+REPORT = """\
+Error executing process > 'P:BOOM (s1)'
+
+Caused by:
+  Process `P:BOOM (s1)` terminated with an error exit status (1)
+
+Command executed:
+
+  do_the_thing --in x
+
+Command exit status:
+  1
+
+Command output:
+  (empty)
+
+Command error:
+  error during connect: docker.sock: EOF
+  second line of the tool's stderr
+
+Work dir:
+  /w/ab/cdef
+
+Container:
+  quay.io/example:1
+
+Tip: you can replicate the issue by changing to the process work dir
+"""
+
+
+def test_command_error_extracts_the_tools_own_message():
+    got = nf_tui.command_error(REPORT)
+    assert got.splitlines() == ["error during connect: docker.sock: EOF",
+                                "second line of the tool's stderr"]
+
+
+def test_command_error_stops_at_the_next_section():
+    got = nf_tui.command_error(REPORT)
+    assert "/w/ab/cdef" not in got and "quay.io" not in got and "Tip:" not in got
+
+
+def test_command_error_treats_empty_as_absent():
+    block = REPORT.replace("  error during connect: docker.sock: EOF\n"
+                           "  second line of the tool's stderr", "  (empty)")
+    assert nf_tui.command_error(block) == ""
+
+
+def test_why_failed_prefers_the_command_error():
+    why = nf_tui.why_failed(REPORT)
+    assert why == "error during connect: docker.sock: EOF"
+    assert "exit status" not in why, "the exit status is not a reason"
+
+
+def test_why_failed_falls_back_when_the_command_said_nothing():
+    block = REPORT.replace("  error during connect: docker.sock: EOF\n"
+                           "  second line of the tool's stderr", "  (empty)")
+    assert nf_tui.why_failed(block) == nf_tui.error_summary(block)
+    assert "exit status (1)" in nf_tui.why_failed(block)
+
+
+def test_run_report_carries_why_for_a_failure(tmp_path):
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"~> TaskHandler[id: 1; name: P:BOOM (s1); status: COMPLETED; exit: 1; "
+        f"error: -; workDir: {wd}]\n"
+        f"Jul-15 15:24:39.100 [main] ERROR nextflow.Nextflow - "
+        f"Error executing process > 'P:BOOM (s1)'\n"
+        + REPORT.split("\n", 1)[1].replace("/w/ab/cdef", str(wd))
+        + "\nJul-15 15:24:40.000 [main] DEBUG nextflow.Session - Goodbye\n")
+    rep = nf_tui.run_report(log)
+    err = [t for t in rep["tasks"] if t.get("error")][0]["error"]
+    assert err["why"] == "error during connect: docker.sock: EOF"
+    assert "docker.sock" in err["command_error"]
+    assert "exit status" in err["summary"]      # the old field is unchanged
