@@ -3,8 +3,13 @@
 [![CI](https://github.com/stavgrossfeld/nf-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/stavgrossfeld/nf-tui/actions/workflows/ci.yml)
 
 A terminal (and web) UI for browsing [Nextflow](https://www.nextflow.io/) runs —
-tasks, logs, and output files — parsed live from a run's `.nextflow.log`.
-No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
+tasks, logs, and output files — read straight from a run's `.nextflow.log` and
+work directories.
+
+You don't have to decide to monitor a run before you start it. Point nf-tui at
+any run directory — the one going right now, one a colleague launched, one that
+failed in CI last week — and it reads what Nextflow wrote anyway. No plugin, no
+re-run, no account.
 
 ![nf-tui demo](demo.gif)
 
