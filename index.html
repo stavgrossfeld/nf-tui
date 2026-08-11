@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nf-tui &mdash; a terminal UI for Nextflow runs</title>
+<style>
+  :root {
+    --ground: #f8f7fa;
+    --panel:  #ffffff;
+    --ink:    #17151d;
+    --muted:  #6e6a7a;
+    --rule:   #e6e3ec;
+    --accent: #5b3fd6;
+    --accent-soft: #efebfd;
+    --ok:     #2f8f5b;
+    --fail:   #d64545;
+    --chrome: #f1eff5;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+            "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #121017; --panel: #1a1722; --ink: #ecebf0; --muted: #9b96a8;
+      --rule: #2b2635; --accent: #b49bff; --accent-soft: #221c38;
+      --ok: #55c98b; --fail: #ff7a7a; --chrome: #201b2b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #121017; --panel: #1a1722; --ink: #ecebf0; --muted: #9b96a8;
+    --rule: #2b2635; --accent: #b49bff; --accent-soft: #221c38;
+    --ok: #55c98b; --fail: #ff7a7a; --chrome: #201b2b;
+  }
+  :root[data-theme="light"] {
+    --ground: #f8f7fa; --panel: #ffffff; --ink: #17151d; --muted: #6e6a7a;
+    --rule: #e6e3ec; --accent: #5b3fd6; --accent-soft: #efebfd;
+    --ok: #2f8f5b; --fail: #d64545; --chrome: #f1eff5;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--mono); font-size: 15px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
+
+  /* ---------- nav ---------- */
+  nav {
+    border-bottom: 1px solid var(--rule); position: sticky; top: 0;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(8px); z-index: 20;
+  }
+  .nav-in {
+    display: flex; align-items: center; gap: 26px;
+    padding: 14px 0; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; font-weight: 700;
+           letter-spacing: .06em; }
+  .brand .sub { font-weight: 400; font-size: 12px; color: var(--muted);
+                letter-spacing: .02em; }
+  .nav-links { display: flex; gap: 20px; margin-left: auto; flex-wrap: wrap; }
+  .nav-links a { color: var(--muted); text-decoration: none; font-size: 13.5px; }
+  .nav-links a:hover, .nav-links a:focus-visible { color: var(--ink); }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 74px 0 34px; display: grid; gap: 46px;
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
+          align-items: center; }
+  @media (max-width: 940px) { .hero { grid-template-columns: 1fr; padding-top: 44px; } }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 10px;
+    border: 1px solid var(--rule); background: var(--panel);
+    border-radius: 7px; padding: 7px 13px 7px 10px;
+    font-size: 12.5px; color: var(--muted); margin-bottom: 26px;
+  }
+  .badge::before { content: ""; width: 3px; height: 15px; border-radius: 2px;
+                   background: var(--accent); }
+
+  h1 { font-size: clamp(34px, 5.4vw, 58px); line-height: 1.06; margin: 0 0 22px;
+       letter-spacing: -0.035em; font-weight: 700; text-wrap: balance; }
+  h1 .b { color: var(--accent); }
+  .lede { color: var(--muted); font-size: 15.5px; max-width: 60ch; margin: 0 0 28px; }
+
+  .cta-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px; text-decoration: none;
+    background: var(--accent); color: #fff; border-radius: 9px;
+    padding: 13px 20px; font-size: 14px; font-weight: 600;
+    border: 1px solid transparent;
+  }
+  .btn:hover { filter: brightness(1.07); }
+  .btn.ghost { background: var(--panel); color: var(--ink); border-color: var(--rule); }
+  a:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent);
+                                        outline-offset: 3px; }
+
+  /* ---------- terminal chrome ---------- */
+  .term {
+    border: 1px solid var(--rule); border-radius: 12px; overflow: hidden;
+    background: var(--panel); box-shadow: 0 24px 60px -30px rgba(30,20,60,.42);
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: var(--chrome); border-bottom: 1px solid var(--rule);
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: #dcd8e4; }
+  @media (prefers-color-scheme: dark) { .dot { background: #3b3448; } }
+  :root[data-theme="dark"] .dot { background: #3b3448; }
+  .term-title { font-size: 12px; color: var(--muted); margin-left: 6px; }
+  .term img { display: block; width: 100%; height: auto; }
+
+  /* ---------- sections ---------- */
+  section { padding: 58px 0; border-top: 1px solid var(--rule); }
+  h2 { font-size: 13px; letter-spacing: .13em; text-transform: uppercase;
+       color: var(--muted); font-weight: 600; margin: 0 0 26px; }
+  h3 { font-size: 16px; margin: 0 0 8px; letter-spacing: -0.01em; }
+
+  .grid { display: grid; gap: 20px; grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--rule);
+          border-radius: 11px; padding: 20px 20px 22px; }
+  .card p { color: var(--muted); margin: 0; font-size: 14px; }
+  .card .k { color: var(--accent); font-size: 12px; letter-spacing: .08em;
+             text-transform: uppercase; display: block; margin-bottom: 10px; }
+
+  pre { margin: 0; background: var(--panel); border: 1px solid var(--rule);
+        border-radius: 11px; padding: 18px 20px; overflow-x: auto;
+        font-size: 13.5px; line-height: 1.7; }
+  code { font-family: var(--mono); }
+  .cmd { color: var(--accent); }
+  .cm  { color: var(--muted); }
+  .ok  { color: var(--ok); }
+  .bad { color: var(--fail); }
+
+  .two { display: grid; gap: 22px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px;
+          font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--rule); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px;
+       letter-spacing: .07em; text-transform: uppercase; }
+  td.n { text-align: right; }
+
+  .note { color: var(--muted); font-size: 13.5px; max-width: 72ch; }
+  footer { padding: 40px 0 60px; border-top: 1px solid var(--rule);
+           color: var(--muted); font-size: 13px; display: flex; gap: 18px;
+           flex-wrap: wrap; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+
+
+<nav>
+  <div class="wrap nav-in">
+    <span class="brand">nf-tui <span class="sub">nextflow &middot; terminal</span></span>
+    <span class="nav-links">
+      <a href="#what">What it does</a>
+      <a href="#agents">Agents</a>
+      <a href="#install">Install</a>
+      <a href="#honest">Limitations</a>
+      <a href="https://github.com/stavgrossfeld/nf-tui">GitHub</a>
+    </span>
+  </div>
+</nav>
+
+<div class="wrap">
+  <div class="hero">
+    <div>
+      <span class="badge">reads .nextflow.log &mdash; no plugin, no account</span>
+      <h1>Debug a Nextflow run<br><span class="b">from the terminal</span></h1>
+      <p class="lede">
+        nf-tui reads a run's log and work directories directly. It works on runs
+        nobody set up for it &mdash; the one going now, the one a colleague launched,
+        the one that failed in CI last Tuesday.
+      </p>
+      <div class="cta-row">
+        <a class="btn" href="https://github.com/stavgrossfeld/nf-tui">Get it on GitHub &rarr;</a>
+        <a class="btn ghost" href="#install">Install</a>
+      </div>
+    </div>
+    <div class="term">
+      <div class="term-bar">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="term-title">nf-tui &mdash; nf-core/sarek</span>
+      </div>
+      <img src="demo.gif"
+           alt="nf-tui browsing a live nf-core/sarek run: the task tree with
+                durations and peak memory, a failed task's error report, a task's
+                output files, and a BAM decoded to SAM through the task's own
+                container.">
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+<section id="what">
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card">
+      <span class="k">no instrumentation</span>
+      <h3>Works on runs it never saw start</h3>
+      <p>A platform has to be in the loop when the run launches. nf-tui reads what
+         Nextflow already writes, so every historical run on your cluster is
+         browsable today.</p>
+    </div>
+    <div class="card">
+      <span class="k">stays put</span>
+      <h3>Nothing leaves your infrastructure</h3>
+      <p>A local process reading local files. No run metadata, sample names or
+         paths go anywhere. Under GxP, PHI or IP constraints that removes a
+         review rather than starting one.</p>
+    </div>
+    <div class="card">
+      <span class="k">streams</span>
+      <h3>A 10 GB output opens instantly</h3>
+      <p>Every pane loads as you scroll &mdash; text, gzip, and BAM/CRAM decoded with
+         samtools from the task's own container, mounts and all.</p>
+    </div>
+    <div class="card">
+      <span class="k">-resume</span>
+      <h3>Resumed runs aren't empty</h3>
+      <p>A resumed run logs only <code>Cached process</code> lines and no task
+         handlers at all. Cached tasks are resolved against the work tree, so
+         their logs, outputs and metrics stay browsable.</p>
+    </div>
+    <div class="card">
+      <span class="k">any executor</span>
+      <h3>Local, SLURM, k8s, AWS Batch</h3>
+      <p>All name their handler <code>*TaskHandler</code>, which is what the
+         parser keys on. Cloud work trees are read through your own
+         <code>aws</code> / <code>gcloud</code> &mdash; no SDK is added.</p>
+    </div>
+    <div class="card">
+      <span class="k">over ssh</span>
+      <h3>Runs where the run is</h3>
+      <p>Install it in your home directory on the login node. No daemon, no root,
+         no service. Or serve the same UI to a browser and forward the port.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>The one screen</h2>
+  <div class="two">
+    <div>
+      <p class="note" style="margin-bottom:18px">
+        Task tree, the selected task's log, its output files with sizes as
+        they're written, the run log, and a <code>squeue</code>-style view of
+        what's running versus queued. <code>e</code> jumps to the next failure
+        and leads with why.
+      </p>
+      <pre><code><span class="cm"># the whole run, as data</span>
+<span class="cmd">nf-tui --json</span> /path/to/run
+
+<span class="cm"># only what broke</span>
+<span class="cmd">nf-tui --json --failed</span> /path/to/run
+
+<span class="cm"># one object per line while it runs</span>
+<span class="cmd">nf-tui --json --watch 5</span> /path/to/run</code></pre>
+    </div>
+    <div>
+      <table>
+        <thead><tr><th>Key</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>e</code></td><td>next failure, and why it failed</td></tr>
+          <tr><td><code>s</code></td><td>sort &mdash; slowest, then peak memory</td></tr>
+          <tr><td><code>d</code></td><td>the task's output files</td></tr>
+          <tr><td><code>t</code> / <code>c</code></td><td>task log / container log</td></tr>
+          <tr><td><code>p</code></td><td>running vs queued, with elapsed times</td></tr>
+          <tr><td><code>g</code></td><td>run log, at the tail</td></tr>
+          <tr><td><code>L</code></td><td>open any of it in <code>less</code></td></tr>
+          <tr><td><code>/</code></td><td>filter the tree, or search the log</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="agents">
+  <h2>For agents</h2>
+  <p class="note" style="margin-bottom:20px">
+    <code>nf-tui-mcp</code> serves a run over MCP, so Claude or any MCP client can
+    ask what broke. One call returns every failed task with the reason &mdash; not just
+    the exit status.
+  </p>
+  <div class="two">
+    <pre><code><span class="cm"># wire it up</span>
+<span class="cmd">claude mcp add nf-tui -- nf-tui-mcp</span>
+
+<span class="cm"># tools it exposes</span>
+list_runs     get_run      get_failures
+get_task      list_outputs read_output
+tail_log      search_log</code></pre>
+    <pre><code><span class="cm">// get_failures, from a real run</span>
+"exit": <span class="bad">"137"</span>,
+"why": <span class="ok">"error during connect: Get</span>
+<span class="ok">  \"http://&hellip;/docker.sock/_ping\": EOF"</span>,
+"cause": "&hellip;terminated with an
+  error exit status (1)"</code></pre>
+  </div>
+  <p class="note" style="margin-top:18px">
+    Nextflow's own <code>Caused by:</code> line reports the exit status. The reason
+    is what the command printed &mdash; here, the container runtime had died. An agent
+    reading only the exit status would have gone looking for a bug in the pipeline.
+  </p>
+</section>
+
+<section id="install">
+  <h2>Install</h2>
+  <div class="two">
+    <pre><code><span class="cm"># with uv</span>
+<span class="cmd">uv tool install</span> git+https://github.com/stavgrossfeld/nf-tui
+
+<span class="cm"># or pip</span>
+<span class="cmd">pip install</span> git+https://github.com/stavgrossfeld/nf-tui</code></pre>
+    <pre><code><span class="cm"># point it at a run</span>
+<span class="cmd">nf-tui</span> /path/to/run
+
+<span class="cm"># or launch one and watch it live</span>
+<span class="cmd">nf-tui nextflow run</span> nf-core/sarek \
+  -profile test,docker --outdir results</code></pre>
+  </div>
+  <p class="note" style="margin-top:18px">
+    Python &ge; 3.10 is the only requirement. A container engine is needed for
+    viewing BAM/CRAM and nothing else. Puts <code>nf-tui</code>,
+    <code>nf-tui-web</code>, <code>nf-tui-run</code> and <code>nf-tui-mcp</code>
+    on your PATH.
+  </p>
+</section>
+
+<section id="honest">
+  <h2>What hasn't been tested</h2>
+  <p class="note">
+    Parsing and container-command construction are pinned by tests built from
+    Nextflow's own output, and the Singularity path is executed against a shim
+    that behaves like the CLI. But nothing here has run against a live scheduler,
+    a real <code>.sif</code>, or a real S3 bucket &mdash; the cloud path is exercised
+    through a fake <code>aws</code>. Reports from a real cluster are welcome.
+  </p>
+</section>
+
+<footer class="wrap">
+  <span>MIT</span>
+  <span>175 tests</span>
+  <a href="https://github.com/stavgrossfeld/nf-tui">github.com/stavgrossfeld/nf-tui</a>
+</footer>
+</div>
+
+</body>
+</html>
