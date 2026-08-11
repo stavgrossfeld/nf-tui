@@ -21,8 +21,9 @@ No plugin, no re-run, no Seqera Platform. Point it at a run directory and go.
   handler `*TaskHandler`, which is what the parser keys on, and the grid form
   (which appends `started:`/`exited:` after the work dir) is handled. Parsing
   and container command construction are covered by tests built from
-  Nextflow's own formats; they have not yet been exercised against a live
-  scheduler, so reports from a real cluster are welcome.
+  Nextflow's own formats, and the Singularity path is executed against a shim
+  that behaves like the CLI — but none of it has run against a live scheduler
+  or a real `.sif`, so reports from a real cluster are welcome.
 - **Resource metrics** — each finished task shows its duration and peak memory
   (from `.command.trace`); `s` sorts to float the slowest / hungriest process
   to the top, so the bottleneck is one keypress away.

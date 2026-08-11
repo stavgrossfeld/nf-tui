@@ -118,6 +118,15 @@ Install from the repository:
   where counting is free. Found by driving the real binary against a 10 GB file
   in a live nf-core/sarek work dir.
 
+### Containers
+
+- **Singularity/Apptainer is executed in tests, not just parsed.** The format
+  tests pinned a verbatim `.command.run`; these run the whole path — probe the
+  image, build the decode, execute it — through a shim that behaves like the
+  `singularity` CLI, the way the S3 support goes through a fake `aws`. Both new
+  tests fail if the invocation reverts to docker's `run --rm`, which is the
+  shape of the bug that once made Singularity silently useless.
+
 ### For agents
 
 - **Failures say *why*, not just the exit status.** `Caused by:` is Nextflow's

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -2981,3 +2982,156 @@ def test_run_report_carries_why_for_a_failure(tmp_path):
     assert err["why"] == "error during connect: docker.sock: EOF"
     assert "docker.sock" in err["command_error"]
     assert "exit status" in err["summary"]      # the old field is unchanged
+
+
+# ---------------------------------------------------------------------------
+# Singularity, actually executed. The tests above pin the *format* of a real
+# .command.run; these run the container path through a shim that behaves like
+# the singularity CLI, the same way the S3 support is exercised through a fake
+# `aws`. Nothing here needs a cluster, but it does prove the commands nf-tui
+# builds are ones the engine would accept — the previous Singularity bug was
+# exactly a command the engine could never have run.
+# ---------------------------------------------------------------------------
+
+SINGULARITY_SHIM = r'''#!/usr/bin/env python3
+"""Enough of `singularity` to run nf-tui's commands: exec [flags] IMAGE cmd..."""
+import os, subprocess, sys
+
+args = sys.argv[1:]
+if not args or args[0] != "exec":
+    sys.stderr.write("shim: expected `exec`, got %r\n" % (args[:1],))
+    sys.exit(2)
+args = args[1:]
+
+binds = []
+while args:
+    a = args[0]
+    if a in ("--no-home", "--containall", "--cleanenv"):
+        args.pop(0)
+    elif a in ("-B", "--bind"):
+        args.pop(0)
+        binds.append(args.pop(0))
+    elif a.startswith("-"):
+        args.pop(0)
+    else:
+        break
+
+if not args:
+    sys.stderr.write("shim: no image given\n"); sys.exit(2)
+image = args.pop(0)
+if not image.endswith(".sif"):
+    sys.stderr.write("shim: %s is not a .sif\n" % image); sys.exit(2)
+if not os.path.exists(image):
+    sys.stderr.write("FATAL: image not found: %s\n" % image); sys.exit(255)
+with open(os.environ["SHIM_CALLS"], "a") as fh:
+    fh.write("exec|%s|%s|%s\n" % (image, ",".join(binds), " ".join(args)))
+
+# `sh -c "..."` — run it for real, so the command nf-tui built has to be valid
+if args[:2] == ["sh", "-c"]:
+    sys.exit(subprocess.run(["sh", "-c", args[2]]).returncode)
+sys.exit(subprocess.run(args).returncode)
+'''
+
+SAMTOOLS_SHIM = '''#!/bin/sh
+# Enough of samtools for the viewer: `samtools view -h <file>`
+case "$1" in
+  view) shift ;;
+  *) echo "samtools: unknown subcommand $1" >&2; exit 1 ;;
+esac
+[ "$1" = "-h" ] && shift
+[ -f "$1" ] || { echo "samtools: cannot open $1" >&2; exit 1; }
+echo "@HD\tVN:1.6\tSO:coordinate"
+echo "@SQ\tSN:chr22\tLN:40001"
+echo "read1\t99\tchr22\t100\t60\t10M\t=\t200\t150\tACGT\tIIII"
+'''
+
+
+@pytest.fixture
+def singularity_run(tmp_path, monkeypatch):
+    """A run whose task used Singularity, with a shimmed engine on PATH."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "singularity").write_text(SINGULARITY_SHIM)
+    (bin_dir / "singularity").chmod(0o755)
+    (bin_dir / "samtools").write_text(SAMTOOLS_SHIM)
+    (bin_dir / "samtools").chmod(0o755)
+    calls = tmp_path / "calls.txt"
+    calls.write_text("")
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("SHIM_CALLS", str(calls))
+
+    img = tmp_path / "images" / "samtools_1.21.sif"
+    img.parent.mkdir()
+    img.write_bytes(b"SIF\x00")
+    wd = tmp_path / "work" / "ab" / ("c" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("ran\n")
+    (wd / ".command.run").write_text(
+        'nxf_launch() {\n'
+        '    set +u; env - PATH="$PATH" ${TMP:+SINGULARITYENV_TMP="$TMP"} '
+        f'singularity exec --no-home -B /scratch:/scratch -B "$NXF_TASK_WORKDIR" {img} '
+        '/bin/bash -c "cd $NXF_TASK_WORKDIR; eval $(nxf_container_env); '
+        '/bin/bash -ue .command.sh"\n}\n')
+    (wd / "test.cram").write_bytes(b"CRAM\x00\x01")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(f"~> TaskHandler[id: 1; name: P:ALIGN (s1); status: COMPLETED; "
+                   f"exit: 0; error: -; workDir: {wd}]\n")
+    return tmp_path, wd, str(img), calls
+
+
+def test_singularity_image_probe_actually_runs(singularity_run):
+    """_image_has must build a command the engine accepts — `exec`, no --rm."""
+    _, _, img, calls = singularity_run
+    assert nf_tui._image_has("singularity", img, "samtools") is True
+    assert nf_tui._image_has("singularity", img, "definitely-not-here") is False
+    recorded = calls.read_text().strip().splitlines()
+    assert recorded, "the shim was never invoked"
+    assert all(r.startswith("exec|") for r in recorded), recorded
+
+
+def test_singularity_decodes_a_cram_end_to_end(singularity_run):
+    """The whole path: parse .command.run, build the command, run it, show SAM."""
+    base, wd, img, calls = singularity_run
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        tree.move_cursor(leaves(tree)[0])
+        await pilot.pause()
+        await pilot.press("d")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        files = app.query_one("#files", OptionList)
+        files.highlighted = [p.name for p in app._files].index("test.cram")
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pane = app.query_one("#log", RichLog)
+        text = "\n".join("".join(s.text for s in st._segments) for st in pane.lines)
+        assert "@HD" in text and "chr22" in text, text[:400]
+        # and it went through singularity, with the task's own binds
+        rec = calls.read_text()
+        assert "exec|" in rec and img in rec
+        assert "/scratch:/scratch" in rec
+        assert str(wd) in rec, "the task's work-dir bind was dropped"
+        return True
+
+    assert drive(NfScope(base), steps)
+
+
+def test_singularity_pager_command_would_run(singularity_run):
+    """`L` builds a shell pipeline; check the engine half of it executes."""
+    base, wd, img, calls = singularity_run
+
+    async def steps(app, pilot):
+        t = Task(hash="ab/cccc", name="P:ALIGN (s1)", status="COMPLETED",
+                 exit="0", workdir=str(wd))
+        cmd = app._pager_command(t, wd / "test.cram", "cat")
+        assert "singularity" in cmd and " exec " in cmd and "--rm" not in cmd
+        # run everything up to the pager and check it produced SAM
+        engine_part = cmd.split("| cat")[0]
+        r = subprocess.run(["sh", "-c", engine_part], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        assert "@HD" in r.stdout, r.stdout[:300]
+        return True
+
+    assert drive(NfScope(base), steps)
