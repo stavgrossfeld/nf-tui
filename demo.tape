@@ -1,23 +1,28 @@
-# nf-tui demo — launch a pipeline, then actually debug it.
+# nf-tui demo — a live nf-core/sarek run, then one task in full.
 #
-# Resumed on purpose. A fresh sarek run takes minutes to reach the interesting
-# tasks, and the alternative is a gif that spends most of itself waiting. With
-# -resume the whole tree is there at once, which is also the routine case: you
-# are usually looking at a run that has already been somewhere.
+# Storyboard:
+#   p            what is running vs queued right now, squeue-style
+#   /bwamem1_mem the alignment task — it has a BAM and both fastqs
+#   t            its .command.sh, then its .command.log
+#   d            the files it produced, with sizes
+#   Enter        one of them in the pane
+#   L            the same file in less
+#   q Q          out
 #
-# The beats are the things you actually do when something breaks: jump to the
-# failure and read why, then open one task — its task log, its container log,
-# its outputs, and a BAM decoded through that task's own container.
+# Navigation is by filter, not by counting Down presses. On a live run the tree
+# follows the order Nextflow announced its tasks, which differs every time, so
+# a fixed number of steps lands on a different process in every recording —
+# that cost three takes before it was obvious.
 #
-# Every beat changes the screen. A still pane is dead air, and smooth_retime
-# squeezes it out, so "sleep and admire" does not survive into the cut.
+# Every beat changes the screen. A still pane is dead air that smooth_retime
+# squeezes out, so "sleep and admire" does not survive into the cut.
 #
 # Render with:
 #   vhs demo.tape
-#   REAL_SECS=<tape wall time> WIDTH=1100 MAX_HOLD=1.2 \
-#     python smooth_retime.py demo_raw.gif demo.gif
+#   REAL_SECS=<wall time> OPEN_UNTIL=<when the beats start> \
+#     WIDTH=1100 MAX_HOLD=2.2 python smooth_retime.py demo_raw.gif demo.gif
 #
-# Expects docker running and a previous run in ~/scratch/demo_sarek to resume.
+# Expects docker running.
 
 Output demo_raw.gif
 Set FontSize 16
@@ -38,109 +43,61 @@ Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out"
 Sleep 800ms
 Enter
 
-# A genuinely fresh run — nothing cached, so every task really executes and the
-# tree fills with ✓ COMPLETED and real durations rather than ⟲ CACHED.
-#
-# Waits on the screen rather than sleeping a guessed number of seconds. Every
-# fixed Sleep here was a bet on how long sarek takes, and losing the bet meant
-# the tape pressing keys into a tree that had not filled yet. This just watches
-# for the run to finish. smooth_retime runs the whole stretch at 14x.
-# A plain sleep, not a Wait+Screen. Waiting on the screen is better where it
-# works — but over minutes vhs polls the terminal buffer until the connection
-# drops ("failed to get buffer"), which killed two recordings. The short waits
-# below are where the precision actually matters anyway.
-Sleep 215s
+# Nothing is cached, so every task really executes: the tree fills with
+# ✓ COMPLETED and real durations. smooth_retime runs this stretch at 14x.
+# One wait, not two. The retimer fast-forwards a single opening stretch, so a
+# second long sleep later in the tape plays at real speed — that put a full
+# minute of dead air in the middle of the last cut. Everything that needs to
+# happen before the beats happens here, at 14x.
+Sleep 135s
 
-# ── Scroll the tree ────────────────────────────────────────────────────────
-# One key at a time with a gap: `Down 4` sends four presses back to back and
-# Textual does not register them all.
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Down
-Sleep 260ms
-Sleep 700ms
-
-# ── Sort by peak memory: the heaviest process floats to the top ────────────
-# Also how the demo reaches mark duplicates on a *live* run without searching.
-# Counting scroll steps cannot work here: the tree follows the order Nextflow
-# announced its tasks, which differs run to run. Sorting does not care — mark
-# duplicates peaks near 5 GB, several times anything else.
-#
-# Nothing may move the cursor before this. `e` (jump to a failure) used to run
-# here and threw it tens of lines down the tree, which the Ups below could not
-# climb back from — the clip then opened a process group and showed an empty
-# file list.
-Type "s"
-Sleep 1400ms
-Type "s"
-Wait+Screen@15s /sorted by memory/
+# ── What is running right now, squeue-style ────────────────────────────────
+# Nextflow's log cannot tell queued from executing — it records a task only
+# when it finishes — so this reads .command.begin in each work dir.
+Type "p"
+Sleep 5s
+Escape
 Sleep 1200ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Up
-Sleep 190ms
-Sleep 500ms
-Down
-Sleep 900ms
 
-# ── Its task log ───────────────────────────────────────────────────────────
-# .command.log, with the container-pull and JVM noise filtered out.
-Type "t"
-Sleep 3500ms
-
-# ── Its outputs, and the BAM ───────────────────────────────────────────────
-Type "d"
-Sleep 1600ms
-Down
-Sleep 900ms
+# ── One task in full: the alignment, which has a BAM and both fastqs ───────
+Type "/bwamem1_mem"
+Sleep 1400ms
+Enter
+Sleep 700ms
 Down
 Sleep 1s
-Enter
-# A real `docker run` + samtools decode. Wait for the SAM header to appear
-# rather than guessing: at a fixed 9s the pane was still reading "… loading …"
-# when the next key arrived.
-Wait+Screen@90s /@HD/
+
+# ── Its .command.sh, then its .command.log ────────────────────────────────
+# The task view leads with the script Nextflow generated, with the container
+# noise filtered out of the output below it.
+Type "t"
+Sleep 4s
+Type "l"
+Sleep 800ms
+Space
+Sleep 2500ms
+Space
 Sleep 2500ms
 
-# ── The same BAM in less, full screen ──────────────────────────────────────
-# L hands it to the pager: samtools decoding into less, paged lazily.
+# ── The files it produced, with sizes ─────────────────────────────────────
+Type "d"
+Sleep 2s
+Down
+Sleep 1200ms
+Down
+Sleep 1200ms
+Down
+Sleep 1400ms
+
+# ── One of them, in the pane ──────────────────────────────────────────────
+Enter
+Sleep 6s
+
+# ── The same file in less ─────────────────────────────────────────────────
 Type "L"
-# L starts a *second* container, so less sits on "Waiting for data..." until it
-# produces output — several seconds under amd64 emulation.
-Wait+Screen@90s /@HD/
-Sleep 2500ms
+Sleep 8s
 Space
 Sleep 2s
-Space
-Sleep 2500ms
 Type "q"
 Sleep 1800ms
 
