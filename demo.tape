@@ -38,11 +38,18 @@ Type "nf-tui nextflow run nf-core/sarek -profile test,docker --outdir out"
 Sleep 800ms
 Enter
 
-# A genuinely fresh run — nothing cached, so every task is really executing and
-# the tree fills with ✓ COMPLETED and real durations rather than ⟲ CACHED.
-# That takes a few minutes, which is what OPEN_UNTIL is for: smooth_retime runs
-# this whole stretch at 14x, so the viewer watches it fill in seconds.
-Sleep 210s
+# A genuinely fresh run — nothing cached, so every task really executes and the
+# tree fills with ✓ COMPLETED and real durations rather than ⟲ CACHED.
+#
+# Waits on the screen rather than sleeping a guessed number of seconds. Every
+# fixed Sleep here was a bet on how long sarek takes, and losing the bet meant
+# the tape pressing keys into a tree that had not filled yet. This just watches
+# for the run to finish. smooth_retime runs the whole stretch at 14x.
+# A plain sleep, not a Wait+Screen. Waiting on the screen is better where it
+# works — but over minutes vhs polls the terminal buffer until the connection
+# drops ("failed to get buffer"), which killed two recordings. The short waits
+# below are where the precision actually matters anyway.
+Sleep 215s
 
 # ── Scroll the tree ────────────────────────────────────────────────────────
 # One key at a time with a gap: `Down 4` sends four presses back to back and
@@ -74,7 +81,8 @@ Sleep 700ms
 Type "s"
 Sleep 1400ms
 Type "s"
-Sleep 1800ms
+Wait+Screen@15s /sorted by memory/
+Sleep 1200ms
 Up
 Sleep 190ms
 Up
@@ -116,16 +124,19 @@ Sleep 900ms
 Down
 Sleep 1s
 Enter
-# Generous on purpose: a real `docker run` + samtools decode, and a cold start
-# under vhs's render load takes seconds. Overshooting costs nothing — the
-# retimer squeezes whatever ends up standing still. (At 9s the pane was still
-# reading "… loading …" when L took over.)
-Sleep 15s
+# A real `docker run` + samtools decode. Wait for the SAM header to appear
+# rather than guessing: at a fixed 9s the pane was still reading "… loading …"
+# when the next key arrived.
+Wait+Screen@90s /@HD/
+Sleep 2500ms
 
 # ── The same BAM in less, full screen ──────────────────────────────────────
 # L hands it to the pager: samtools decoding into less, paged lazily.
 Type "L"
-Sleep 8s
+# L starts a *second* container, so less sits on "Waiting for data..." until it
+# produces output — several seconds under amd64 emulation.
+Wait+Screen@90s /@HD/
+Sleep 2500ms
 Space
 Sleep 2s
 Space
