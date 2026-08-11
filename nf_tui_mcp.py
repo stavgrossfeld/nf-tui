@@ -288,9 +288,13 @@ TOOLS: list[dict] = [
     },
     {
         "name": "get_failures",
-        "description": "Every failed task with the cause, Nextflow's full error "
-                       "report and the task's .command.* logs. The first call to "
-                       "make when a run has gone wrong.",
+        "description": "Why the run's tasks failed. Returns each failed task "
+                       "with `why` — the message the command itself printed, "
+                       "which is the actual reason — plus `command_error`, "
+                       "Nextflow's `cause`, its full `report`, and the task's "
+                       ".command.* logs. The first call to make when a run has "
+                       "gone wrong; `cause` alone usually says no more than the "
+                       "exit status.",
         "inputSchema": {
             "type": "object",
             "properties": {"run": {"type": "string"}},
@@ -301,7 +305,9 @@ TOOLS: list[dict] = [
     {
         "name": "get_task",
         "description": "One task in full: state, exit code, resource metrics, "
-                       "error report, output file list and .command.* logs.",
+                       "output file list, .command.* logs, and — if it failed — "
+                       "an error object carrying `why` (the command's own "
+                       "message), `command_error`, `cause` and `report`.",
         "inputSchema": {
             "type": "object",
             "properties": {

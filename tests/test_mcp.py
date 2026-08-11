@@ -289,3 +289,31 @@ def test_get_failures_says_why_not_just_the_exit_status(tmp_path):
     assert "libcrypto" in f["command_error"]
     # the old, less useful phrasing is still there for anything that wants it
     assert "exit status (1)" in f["cause"]
+
+
+def test_tool_descriptions_advertise_why():
+    """A model picks a tool from its description, so the field that answers
+    "why did this fail" has to be named there, not just present in the reply."""
+    r = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]
+    by_name = {t["name"]: t["description"] for t in r["tools"]}
+    assert "why" in by_name["get_failures"].lower()
+    assert "why" in by_name["get_task"].lower()
+
+
+def test_get_task_carries_why_for_a_failed_task(tmp_path):
+    wd = tmp_path / "work" / "bb" / ("2" * 30)
+    wd.mkdir(parents=True)
+    (wd / ".command.log").write_text("x\n")
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        f"~> TaskHandler[id: 1; name: P:BOOM (s1); status: COMPLETED; exit: 1; "
+        f"error: -; workDir: {wd}]\n"
+        "Jul-15 15:24:39.100 [main] ERROR nextflow.Nextflow - "
+        "Error executing process > 'P:BOOM (s1)'\n"
+        "\nCaused by:\n"
+        "  Process `P:BOOM (s1)` terminated with an error exit status (1)\n"
+        "\nCommand error:\n  bwa: command not found\n"
+        f"\nWork dir:\n  {wd}\n"
+        "\nJul-15 15:24:40.000 [main] DEBUG nextflow.Session - Goodbye\n")
+    _, d = call("get_task", run=str(tmp_path), task_hash="bb/222222")
+    assert d["error"]["why"] == "bwa: command not found"
