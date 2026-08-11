@@ -20,6 +20,11 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+        with:
+          # Pinned so the action doesn't ask the GitHub API for "latest" —
+          # that lookup failed a build with a TLS/self-signed-certificate
+          # error, on a run where every test job had already passed.
+          version: "0.11.16"
 
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} --extra dev pytest -q
@@ -34,6 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.16"          # see the note in the test job
       - name: Build
         run: uv build
       - name: Install the wheel into a clean environment
