@@ -2,7 +2,8 @@
 """Serve nf-tui in a web browser instead of the terminal.
 
 Same app, same code — textual-serve runs the terminal TUI on the server and
-streams it to the browser over a websocket. No Seqera Platform involved.
+streams it to the browser over a websocket. Still a local process reading local
+files; nothing is uploaded anywhere.
 
     python nf_tui_serve.py /path/to/run            # then open http://localhost:8000
     python nf_tui_serve.py /path/to/run --port 9000 --host 0.0.0.0

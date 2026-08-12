@@ -204,11 +204,11 @@ ssh -L 8000:localhost:8000 you@login-node
 #   then open http://localhost:8000
 ```
 
-### Running on AWS without Seqera Platform
+### Running on AWS
 
 Launching on AWS is plain Nextflow — set a Batch queue and an S3 work dir in
-config and run it; the Platform is optional. nf-tui then watches that run from
-wherever Nextflow is running (your laptop, or a small EC2 box):
+config and run it. nf-tui then watches that run from wherever Nextflow is
+running (your laptop, or a small EC2 box):
 
 ```bash
 nf-tui nextflow run main.nf -profile awsbatch -w s3://my-bucket/work
