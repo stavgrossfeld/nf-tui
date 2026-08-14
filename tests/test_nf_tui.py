@@ -3215,3 +3215,68 @@ def test_escape_does_not_disturb_a_tree_with_no_filter(tmp_path):
         return True
 
     assert drive(NfScope(log), steps)
+
+
+# ---- grid executors (SLURM/PBS/LSF/AWS Batch) ------------------------------
+# These lines are copied from a real slurm-executor run, not invented. The
+# parser assumed the local layout and so found nothing on a cluster: the
+# scheduler's job id comes first, and started/exited follow workDir with no
+# semicolon between them.
+
+SLURM_HANDLER = (
+    "Aug-14 16:27:43.795 [Task monitor] DEBUG n.processor.TaskPollingMonitor - "
+    "Task completed > TaskHandler[jobId: 90811; id: 1; name: ALIGN (s1); "
+    "status: COMPLETED; exit: 0; error: -; "
+    "workDir: /scratch/u/run/work/d1/432a07a1ba72797c06eacfad3c01d3 "
+    "started: 1786724867429; exited: 2026-08-14T16:27:43.791816264Z; ]")
+
+
+def test_grid_handler_line_is_parsed(tmp_path):
+    log = tmp_path / ".nextflow.log"
+    log.write_text(SLURM_HANDLER + "\n")
+    tasks = parse_log(log)
+    assert len(tasks) == 1, "a SLURM run showed no tasks at all"
+    t = tasks[0]
+    assert t.status.upper() == "COMPLETED"
+    assert t.name == "ALIGN (s1)"
+    assert t.exit == "0"
+
+
+def test_grid_workdir_stops_before_the_started_field(tmp_path):
+    """The trailing fields must not end up inside the path.
+
+    Captured up to the next ';' the work dir became
+    '/scratch/.../d1/432a07... started: 1786724867429', which cannot exist —
+    so every log, output file and metric for the task went missing.
+    """
+    log = tmp_path / ".nextflow.log"
+    log.write_text(SLURM_HANDLER + "\n")
+    wd = parse_log(log)[0].workdir
+    assert wd == "/scratch/u/run/work/d1/432a07a1ba72797c06eacfad3c01d3"
+    assert "started" not in wd and not wd.endswith(" ")
+
+
+def test_local_handler_line_still_parses(tmp_path):
+    """The local layout has no jobId and ends at the bracket."""
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "Aug-14 11:52:50.123 [Task monitor] DEBUG n.p.TaskPollingMonitor - "
+        "Task completed > TaskHandler[id: 4; name: FASTQC (test); "
+        "status: COMPLETED; exit: 0; error: -; "
+        "workDir: /home/u/work/3f/8d939f0e3fcffd2eceebb49504012e]\n")
+    t = parse_log(log)[0]
+    assert t.workdir == "/home/u/work/3f/8d939f0e3fcffd2eceebb49504012e"
+    assert t.name == "FASTQC (test)"
+
+
+def test_aws_batch_handler_line_is_parsed(tmp_path):
+    """Same shape as SLURM: a jobId that is not a number."""
+    log = tmp_path / ".nextflow.log"
+    log.write_text(
+        "Aug-14 16:27:43.795 [Task monitor] DEBUG n.c.a.b.AwsBatchTaskHandler - "
+        "Task completed > AwsBatchTaskHandler[jobId: 8a1c-42ff-9b; id: 7; "
+        "name: BAR (1); status: COMPLETED; exit: 0; error: -; "
+        "workDir: /mnt/scratch/aa/bbccdd]\n")
+    t = parse_log(log)[0]
+    assert t.workdir == "/mnt/scratch/aa/bbccdd"
+    assert t.status.upper() == "COMPLETED"

@@ -382,15 +382,19 @@ tail_log      search_log</code></pre>
   <p class="note">
     Parsing and container-command construction are pinned by tests built from
     Nextflow's own output, and the Singularity path is executed against a shim
-    that behaves like the CLI. But nothing here has run against a live scheduler,
-    a real <code>.sif</code>, or a real S3 bucket &mdash; the cloud path is exercised
-    through a fake <code>aws</code>. Reports from a real cluster are welcome.
+    that behaves like the CLI. The SLURM path is now exercised the same way
+    &mdash; a pipeline run through Nextflow's own <code>slurm</code> executor against
+    stand-in <code>sbatch</code>/<code>squeue</code> binaries, which is what turned up
+    the grid-executor parsing bug. But that is a stand-in scheduler, not a real
+    <code>slurmd</code>, and nothing here has run against a real <code>.sif</code> or a
+    real S3 bucket &mdash; the cloud path goes through a fake <code>aws</code>.
+    Reports from a real cluster are welcome.
   </p>
 </section>
 
 <footer class="wrap">
   <span>MIT</span>
-  <span>205 tests</span>
+  <span>209 tests</span>
   <a href="https://github.com/stavgrossfeld/nf-tui">github.com/stavgrossfeld/nf-tui</a>
 </footer>
 </div>

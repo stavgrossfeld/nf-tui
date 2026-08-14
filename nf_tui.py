@@ -86,11 +86,25 @@ _RUNTYPE_RE = re.compile(
     r"(Submitted|Re-submitted|Cached|Stored) process > (.+)$"
 )
 # Every executor's handler class ends in "TaskHandler" (Local/Grid/Cached/...),
-# so matching the suffix covers SLURM, PBS, k8s, AWS Batch, etc.
+# so matching the suffix covers SLURM, PBS, k8s, AWS Batch, etc. The *fields*
+# differ, though, and assuming the local layout made this useless on a cluster:
+#
+#   local  TaskHandler[id: 1; name: X; status: COMPLETED; ...; workDir: /p]
+#   SLURM  TaskHandler[jobId: 90811; id: 1; name: X; ...; workDir: /p started: 1786724867429; exited: ...; ]
+#
+# Two differences, both fatal. The scheduler's job id comes first, so anchoring
+# on "TaskHandler[id:" matched nothing at all; and the grid handler appends
+# started/exited *after* workDir with no semicolon between, so a path taken up
+# to the next ";" swallowed " started: 1786724867429" and named a directory
+# that cannot exist. Measured against a real slurm-executor run: 0 of 6 tasks
+# completed, 0 of 6 work dirs resolved.
 _HANDLER_RE = re.compile(
-    r"TaskHandler\[id: (?P<id>\d+); name: (?P<name>.+?); "
+    r"TaskHandler\["
+    r"(?:[A-Za-z]\w*: [^;]*; )*?"          # jobId:, and any other field, first
+    r"id: (?P<id>\d+); name: (?P<name>.+?); "
     r"status: (?P<status>\w+); exit: (?P<exit>[^;]+); "
-    r"error: (?P<error>[^;]+); workDir: (?P<workdir>[^;\]]+)"
+    r"error: (?P<error>[^;]+); workDir: (?P<workdir>[^;\]]+?)"
+    r"(?=\s+\w+:|\s*[;\]]|$)"              # stop at " started:", ";" or "]"
 )
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # The container invocation inside .command.run, wherever it appears on the line.

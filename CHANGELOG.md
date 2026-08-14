@@ -16,7 +16,18 @@ Install from the repository:
 - **Retries** (`errorStrategy 'retry'`) are shown with an attempt count, and
   `storeDir` tasks no longer collapse into a single entry.
 - **Every executor**: local, SLURM/PBS, k8s and AWS Batch all name their handler
-  class `*TaskHandler`, which is what the parser keys on.
+  class `*TaskHandler`, which is what the parser keys on. Their *fields* differ
+  though, and assuming the local layout made nf-tui useless on a cluster: grid
+  handlers put the scheduler's `jobId:` before `id:`, so anchoring on
+  `TaskHandler[id:` matched nothing, and they append `started:`/`exited:` after
+  `workDir` with no semicolon between, so the path swallowed
+  ` started: 1786724867429` and named a directory that cannot exist. Measured
+  on a real slurm-executor run: **0 of 6 tasks completed and 0 of 6 work dirs
+  resolved** — every task sat at RUNNING for ever with no log, output or
+  metric. Now 6 of 6, with the local layout unchanged at 24 of 24. Found by
+  running a pipeline through Nextflow's slurm executor against stand-in
+  `sbatch`/`squeue` binaries, the same way the S3 support goes through a fake
+  `aws`.
 
 ### Views
 
