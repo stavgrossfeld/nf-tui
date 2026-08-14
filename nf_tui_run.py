@@ -65,8 +65,29 @@ def wanted_engine(cmd: list[str]) -> str | None:
     return None
 
 
-def engine_problem(engine: str) -> str | None:
-    """None if `engine` is installed and answering, else a sentence saying why.
+DETAIL_MAX = 96
+
+
+def _short_detail(output: str) -> str:
+    """The engine's own words, cut down to one readable line.
+
+    Container engines answer a failed probe with a paragraph: orbstack's docker
+    names the socket, then repeats itself twice in dial-error form. The first
+    clause is the part that identifies the problem; the rest is noise on screen.
+    """
+    first = next((l.strip() for l in output.splitlines() if l.strip()), "")
+    first = first.split("; ")[0].rstrip(".")       # drop the "check if ..." tail
+    if len(first) > DETAIL_MAX:
+        first = first[:DETAIL_MAX - 1].rstrip() + "…"
+    return first
+
+
+def engine_problem(engine: str) -> tuple[str, str] | None:
+    """None if `engine` is usable, else (what is wrong, the engine's own words).
+
+    Two parts, because they are printed on two lines: the headline has to say
+    what to do at a glance, and burying it in front of a daemon's diagnostics
+    was the whole complaint about the old one-sentence version.
 
     Nextflow does not check this up front: it launches, submits a task, and the
     task fails with a connect error buried in .command.err — and because our
@@ -76,8 +97,8 @@ def engine_problem(engine: str) -> str | None:
     if shutil.which(engine) is None:
         # On a cluster this is nearly always a module that was not loaded, so
         # say so — "not on PATH" alone sends people looking for an install.
-        hint = "" if daemon else f" (try `module load {engine}`)"
-        return f"`{engine}` is not on PATH{hint}"
+        hint = "" if daemon else f"try `module load {engine}`"
+        return f"{engine} is not on PATH", hint
     # docker/podman have a daemon worth pinging. singularity/apptainer are just
     # binaries, so the most this can cheaply prove is that one runs: a setuid or
     # user-namespace misconfiguration still only shows up on the first `exec`.
@@ -85,14 +106,12 @@ def engine_problem(engine: str) -> str | None:
     try:
         r = subprocess.run(probe, capture_output=True, text=True, timeout=25)
     except FileNotFoundError:
-        return f"`{engine}` is not on PATH"
+        return f"{engine} is not on PATH", ""
     except subprocess.TimeoutExpired:
-        return f"`{engine} {probe[1]}` did not respond within 25s"
+        return f"{engine} is not responding", f"`{engine} {probe[1]}` timed out after 25s"
     if r.returncode != 0:
-        detail = (r.stderr or r.stdout or "").strip().splitlines()
-        first = next((l.strip() for l in detail if l.strip()), "")
-        state = "not answering" if daemon else "failing to run"
-        return f"`{engine}` is installed but {state}" + (f" — {first}" if first else "")
+        state = "is not running" if daemon else "is failing to run"
+        return f"{engine} {state}", _short_detail(r.stderr or r.stdout or "")
     return None
 
 
@@ -125,13 +144,13 @@ def start_run(cmd: list[str]):
     if engine:
         problem = engine_problem(engine)
         if problem:
-            fix = (f"Start {engine} and run it again"
-                   if engine in ("docker", "podman")
-                   else f"Make {engine} available and run it again")
-            sys.exit(
-                f"nf-tui: this command needs {engine}, but {problem}.\n"
-                f"        {fix} — Nextflow would launch, fail every\n"
-                f"        task, and write the reason to a log instead of the screen.")
+            what, detail = problem
+            # Two lines at most. This is printed instead of the run, so the
+            # thing to do belongs first and the engine's diagnostics second.
+            msg = f"nf-tui: {what}, and this run needs it."
+            if detail:
+                msg += f"\n        {detail}"
+            sys.exit(msg)
 
     try:
         out = console.open("wb")

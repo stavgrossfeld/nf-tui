@@ -1609,6 +1609,13 @@ class NfScope(App):
                 summary += f" · {prog.per_min:.1f}/min"
             if prog.eta_secs:
                 summary += f" · ~{human_duration(prog.eta_secs * 1000)} for queued"
+        if self.failed_only:
+            # x is sticky, and the toast that announced it has long since gone
+            # by the time you look at the tree. Without this the header counts
+            # every task while the tree shows two, which reads as a broken tree
+            # rather than a filter that is still on.
+            summary += (f" · showing failed only "
+                        f"({prog.failed:,} of {prog.total:,}) — x for all")
         if self.query_str:
             summary += f' · filter "{self.query_str}": {len(self._visible_tasks())} shown'
         if self.sort_mode != "order":

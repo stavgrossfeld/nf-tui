@@ -127,6 +127,19 @@ Install from the repository:
   tests fail if the invocation reverts to docker's `run --rm`, which is the
   shape of the bug that once made Singularity silently useless.
 
+- **"Failed only" says so in the header.** `x` is a sticky filter whose only
+  announcement was a toast that fades. Leave it on and the header counts every
+  task while the tree shows the two that failed — on a real run, 24 tasks and
+  21 processes above a tree holding one process, which reads as a tree that
+  stopped updating rather than a filter that is still on. The header now
+  carries `showing failed only (2 of 24) — x for all` for as long as it is.
+
+- **The container refusal fits on two lines.** It pasted the daemon's whole
+  reply into the middle of a sentence and then spent two more lines justifying
+  itself — five wrapped lines to say docker is off, with orbstack repeating the
+  socket path three times. Now: what is wrong and what to do on line one, the
+  engine's own first clause on line two.
+
 - **`nf-tui-web` can launch a run too.** `nf-tui nextflow run ...` launched and
   watched; the same command through the web front end was an argparse error
   (`unrecognized arguments: run nf-core/sarek ...`), because only the terminal

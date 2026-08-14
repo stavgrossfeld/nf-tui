@@ -3135,3 +3135,33 @@ def test_singularity_pager_command_would_run(singularity_run):
         return True
 
     assert drive(NfScope(base), steps)
+
+
+def test_failed_only_says_so_in_the_header(tmp_path):
+    """x is sticky and its toast is transient.
+
+    Without a standing indicator the header counts every task while the tree
+    shows only the failures — which reads as a tree that stopped updating.
+    """
+    log = make_run(tmp_path, n_tasks=300, n_procs=3, seed=1)
+
+    def summary(app):
+        return app.sub_title.split("  —  ")[0]
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        assert "showing failed only" not in summary(app)
+        await pilot.press("x")
+        await pilot.pause()
+        s = summary(app)
+        shown, total = len(leaves(tree)), len(app.tasks)
+        assert "showing failed only" in s, s
+        # the counts have to explain the gap between header and tree
+        assert f"{shown:,} of {total:,}" in s, s
+        assert "x for all" in s, s      # and how to get back
+        await pilot.press("x")
+        await pilot.pause()
+        assert "showing failed only" not in summary(app)
+        return True
+
+    assert drive(NfScope(log), steps)

@@ -272,7 +272,7 @@ def test_wanted_engine_reads_the_command(args, expected):
 
 def test_engine_problem_reports_a_missing_binary(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))         # nothing on PATH
-    assert "not on PATH" in nf_tui_run.engine_problem("docker")
+    assert "not on PATH" in nf_tui_run.engine_problem("docker")[0]
 
 
 def test_engine_problem_reports_a_daemon_that_is_not_answering(monkeypatch, tmp_path):
@@ -281,9 +281,9 @@ def test_engine_problem_reports_a_daemon_that_is_not_answering(monkeypatch, tmp_
     fake.write_text("#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
-    problem = nf_tui_run.engine_problem("docker")
-    assert problem and "not answering" in problem
-    assert "Cannot connect" in problem, "the engine's own message should survive"
+    what, detail = nf_tui_run.engine_problem("docker")
+    assert "docker is not running" == what
+    assert "Cannot connect" in detail, "the engine's own message should survive"
 
 
 def test_engine_problem_is_silent_when_the_engine_works(monkeypatch, tmp_path):
@@ -315,7 +315,7 @@ def test_launch_refuses_when_the_engine_is_down(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit) as e:
         nf_tui_run.launch(["nextflow", "run", "x", "-profile", "docker,test"])
-    assert "needs docker" in str(e.value)
+    assert "docker is not running" in str(e.value)
     assert not started, "nextflow was launched despite the engine being down"
 
 
@@ -328,10 +328,10 @@ def test_launch_does_not_pre_flight_without_a_container_profile(tmp_path, monkey
 def test_engine_problem_points_at_module_load_for_singularity(monkeypatch, tmp_path):
     """singularity/apptainer missing on a cluster is a module, not an install."""
     monkeypatch.setenv("PATH", str(tmp_path))         # nothing on PATH
-    problem = nf_tui_run.engine_problem("singularity")
-    assert problem and "module load singularity" in problem
+    what, hint = nf_tui_run.engine_problem("singularity")
+    assert "not on PATH" in what and "module load singularity" in hint
     # docker has no modules — the hint must not leak across engines
-    assert "module load" not in nf_tui_run.engine_problem("docker")
+    assert "module load" not in "".join(nf_tui_run.engine_problem("docker"))
 
 
 def test_engine_problem_does_not_call_singularity_a_daemon(monkeypatch, tmp_path):
@@ -340,10 +340,10 @@ def test_engine_problem_does_not_call_singularity_a_daemon(monkeypatch, tmp_path
     fake.write_text("#!/bin/sh\necho 'FATAL: could not use fakeroot' >&2\nexit 1\n")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
-    problem = nf_tui_run.engine_problem("singularity")
-    assert problem and "failing to run" in problem
-    assert "not answering" not in problem
-    assert "fakeroot" in problem, "the engine's own message should survive"
+    what, detail = nf_tui_run.engine_problem("singularity")
+    assert "is failing to run" in what
+    assert "not running" not in what, "there is no singularity daemon"
+    assert "fakeroot" in detail, "the engine's own message should survive"
 
 
 def test_launch_tells_a_singularity_user_to_make_it_available(tmp_path, monkeypatch):
@@ -352,9 +352,10 @@ def test_launch_tells_a_singularity_user_to_make_it_available(tmp_path, monkeypa
     with pytest.raises(SystemExit) as e:
         nf_tui_run.launch(["nextflow", "run", "x", "-profile", "singularity"])
     msg = str(e.value)
-    assert "needs singularity" in msg
+    assert "singularity is not on PATH" in msg
+    assert "module load singularity" in msg
     # "Start singularity" is docker's advice and is meaningless here
-    assert "Make singularity available" in msg and "Start singularity" not in msg
+    assert "Start singularity" not in msg
 
 
 # ---- nf-tui-web launching a run --------------------------------------------
@@ -409,3 +410,33 @@ def test_serve_launches_a_nextflow_command_and_serves_the_new_run(tmp_path,
     assert str(log.resolve()) in captured["command"]
     # K in the browser must be able to stop the run we started
     assert "NF_TUI_PID=4242" in captured["command"]
+
+
+def test_the_engine_refusal_stays_short(tmp_path, monkeypatch):
+    """The message replaces the run on screen, so it has to be readable.
+
+    The first version pasted the whole daemon error into the middle of a
+    sentence and then spent two more lines justifying itself: five wrapped
+    lines to say "docker is off".
+    """
+    fake = tmp_path / "docker"
+    # orbstack's actual reply: the socket path, then the same thing twice more
+    fake.write_text(
+        "#!/bin/sh\necho 'failed to connect to the docker API at "
+        "unix:///Users/stav/.orbstack/run/docker.sock; check if the path is "
+        "correct and if the daemon is running: dial unix "
+        "/Users/stav/.orbstack/run/docker.sock: connect: no such file or "
+        "directory.' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        nf_tui_run.launch(["nextflow", "run", "x", "-profile", "docker,test"])
+
+    lines = str(e.value).splitlines()
+    assert len(lines) <= 2, f"still verbose:\n{e.value}"
+    assert all(len(l) <= 110 for l in lines), f"a line still wraps:\n{e.value}"
+    # what to do comes first, diagnostics second
+    assert lines[0] == "nf-tui: docker is not running, and this run needs it."
+    assert "docker.sock" in lines[1], "the socket it tried is worth keeping"
+    assert "check if the path" not in lines[1], "the repetition is not"
