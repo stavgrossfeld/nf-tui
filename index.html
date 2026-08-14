@@ -206,7 +206,11 @@
     processes reading local files; nothing is uploaded anywhere.
   </p>
   <div class="two">
-    <pre><code><span class="cm"># in the terminal</span>
+    <pre><code><span class="cm"># no arguments: pick from the runs</span>
+<span class="cm"># it finds here</span>
+<span class="cmd">nf-tui</span>
+
+<span class="cm"># or open one directly</span>
 <span class="cmd">nf-tui</span> /path/to/run
 
 <span class="cm"># prefix any nextflow command to</span>
@@ -277,9 +281,18 @@
     <div class="card">
       <span class="k">any executor</span>
       <h3>Local, SLURM, k8s, AWS Batch</h3>
-      <p>All name their handler <code>*TaskHandler</code>, which is what the
-         parser keys on. Cloud work trees are read through your own
-         <code>aws</code> / <code>gcloud</code> &mdash; no SDK is added.</p>
+      <p>Grid executors label tasks differently &mdash; the scheduler's
+         <code>jobId</code> first, and <code>started</code>/<code>exited</code> after the
+         work dir &mdash; which is read properly, retries and all. Cloud work trees go
+         through your own <code>aws</code> / <code>gcloud</code>; no SDK is added.</p>
+    </div>
+    <div class="card">
+      <span class="k">which run?</span>
+      <h3>Pick one, or watch it die</h3>
+      <p>With no arguments it lists the runs it finds &mdash; state, age, task count,
+         percent done, failures &mdash; and marks the ones that stopped without
+         finishing as <em>stalled</em>. <code>K</code> stops a pipeline you launched
+         from nf-tui.</p>
     </div>
     <div class="card">
       <span class="k">over ssh</span>
@@ -292,38 +305,59 @@
 
 <section>
   <h2>The one screen</h2>
+  <p class="note" style="margin-bottom:22px">
+    Task tree, the selected task's log, its output files with sizes as they're
+    written, the run log, and a <code>squeue</code>-style view of what's running
+    versus queued. The header carries live progress &mdash; counts, throughput and an
+    ETA for the queue &mdash; and every pane loads more as you scroll.
+  </p>
   <div class="two">
-    <div>
-      <p class="note" style="margin-bottom:18px">
-        Task tree, the selected task's log, its output files with sizes as
-        they're written, the run log, and a <code>squeue</code>-style view of
-        what's running versus queued. <code>e</code> jumps to the next failure
-        and leads with why.
-      </p>
-      <pre><code><span class="cm"># the whole run, as data</span>
+    <table>
+      <thead><tr><th>Key</th><th>Find things</th></tr></thead>
+      <tbody>
+        <tr><td><code>e</code></td><td>next failure, and why it failed</td></tr>
+        <tr><td><code>x</code></td><td>only the failures, then back again</td></tr>
+        <tr><td><code>/</code></td><td>filter the tree, or search the log</td></tr>
+        <tr><td><code>n</code> / <code>N</code></td><td>next / previous match</td></tr>
+        <tr><td><code>s</code></td><td>sort &mdash; slowest, then peak memory</td></tr>
+        <tr><td><code>p</code></td><td>running vs queued, with elapsed times</td></tr>
+        <tr><td><code>d</code></td><td>the task's output files, with sizes</td></tr>
+        <tr><td><code>g</code></td><td>run log, at the tail</td></tr>
+      </tbody>
+    </table>
+    <table>
+      <thead><tr><th>Key</th><th>Read it, or act on it</th></tr></thead>
+      <tbody>
+        <tr><td><code>t</code> / <code>c</code></td><td>task log / container log</td></tr>
+        <tr><td><code>f</code></td><td>follow a live log as it's written</td></tr>
+        <tr><td><code>L</code></td><td>open any of it in <code>less</code></td></tr>
+        <tr><td><code>F</code></td><td>pull in a bigger bite of a huge file</td></tr>
+        <tr><td><code>z</code></td><td>full screen for one pane</td></tr>
+        <tr><td><code>y</code> / <code>o</code></td><td>copy the work dir / open it</td></tr>
+        <tr><td><code>K</code></td><td>stop the pipeline you launched</td></tr>
+        <tr><td><code>tab</code> / <code>esc</code></td><td>next pane / back a level</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="two" style="margin-top:26px">
+    <pre><code><span class="cm"># the whole run, as data</span>
 <span class="cmd">nf-tui --json</span> /path/to/run
 
 <span class="cm"># only what broke</span>
 <span class="cmd">nf-tui --json --failed</span> /path/to/run
 
+<span class="cm"># with every task's .command.* logs</span>
+<span class="cmd">nf-tui --json --logs all</span> /path/to/run
+
 <span class="cm"># one object per line while it runs</span>
 <span class="cmd">nf-tui --json --watch 5</span> /path/to/run</code></pre>
-    </div>
-    <div>
-      <table>
-        <thead><tr><th>Key</th><th>Does</th></tr></thead>
-        <tbody>
-          <tr><td><code>e</code></td><td>next failure, and why it failed</td></tr>
-          <tr><td><code>s</code></td><td>sort &mdash; slowest, then peak memory</td></tr>
-          <tr><td><code>d</code></td><td>the task's output files</td></tr>
-          <tr><td><code>t</code> / <code>c</code></td><td>task log / container log</td></tr>
-          <tr><td><code>p</code></td><td>running vs queued, with elapsed times</td></tr>
-          <tr><td><code>g</code></td><td>run log, at the tail</td></tr>
-          <tr><td><code>L</code></td><td>open any of it in <code>less</code></td></tr>
-          <tr><td><code>/</code></td><td>filter the tree, or search the log</td></tr>
-        </tbody>
-      </table>
-    </div>
+    <p class="note">
+      The same data the UI draws from, for a script or a CI job.
+      <code>--logs</code> chooses which tasks carry their <code>.command.*</code>
+      contents &mdash; <code>failed</code> by default, which is the debugging case and
+      the cheap one. <code>--watch</code> keeps emitting a line per interval while
+      the run is live, so you can pipe it somewhere.
+    </p>
   </div>
 </section>
 
