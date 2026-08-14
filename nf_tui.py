@@ -2685,9 +2685,11 @@ class NfScope(App):
 
     def action_back(self) -> None:
         # Escape hierarchy (each press peels back one level):
+        #   search open       -> clear the filter
         #   full screen       -> restore the split
         #   run log           -> task view + tree
         #   focus on log pane -> tree
+        #   failed-only on    -> show every task again
         #   on the tree       -> back to the run selector (if launched from it)
         tree = self.query_one("#tasks", Tree)
         log = self.query_one("#log", RichLog)
@@ -2715,6 +2717,13 @@ class NfScope(App):
             return
         if self.view != "task":
             self._set_view("task", "task log")   # container -> task view
+            return
+        if self.failed_only:
+            # A filter is a level too. Esc already clears the `/` search, and
+            # leaving x armed here meant the next Esc dropped you out to the run
+            # picker with the tree still hiding everything that worked — which
+            # is how you come back to a run and think the tree is broken.
+            self.action_toggle_failed()          # failed-only -> the whole tree
             return
         if not self.target.is_file():
             self._open_picker()                   # task tree -> the run picker

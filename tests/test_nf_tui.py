@@ -3165,3 +3165,53 @@ def test_failed_only_says_so_in_the_header(tmp_path):
         return True
 
     assert drive(NfScope(log), steps)
+
+
+def test_escape_clears_failed_only_before_leaving_the_run(tmp_path):
+    """Esc peels back one level, and a sticky filter is a level.
+
+    It already clears the `/` search. Leaving x armed meant the next Esc took
+    you out to the run picker with the tree still hiding everything that
+    worked — so you came back to a run that looked broken.
+    """
+    log = make_run(tmp_path, n_tasks=300, n_procs=3, seed=1)
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        total = len(leaves(tree))
+        # the app opens on the run log, which is the first level Esc peels
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.view == "task"
+
+        await pilot.press("x")
+        await pilot.pause()
+        assert app.failed_only and len(leaves(tree)) < total
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.failed_only, "escape left the filter on"
+        assert len(leaves(tree)) == total
+        # one level per press — the filter goes, the run stays open
+        assert len(app.screen_stack) == 1, "escape jumped out of the run as well"
+        return True
+
+    assert drive(NfScope(log), steps)
+
+
+def test_escape_does_not_disturb_a_tree_with_no_filter(tmp_path):
+    """The new rung must not swallow an Esc that had nothing to clear."""
+    log = make_run(tmp_path, n_tasks=40, n_procs=2, seed=3)
+
+    async def steps(app, pilot):
+        tree = app.query_one("#tasks", Tree)
+        before = len(leaves(tree))
+        await pilot.press("escape")      # run log -> task view
+        await pilot.pause()
+        await pilot.press("escape")      # nothing left to clear
+        await pilot.pause()
+        assert not app.failed_only and len(leaves(tree)) == before
+        assert app.view == "task"
+        return True
+
+    assert drive(NfScope(log), steps)

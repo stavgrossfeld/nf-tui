@@ -127,6 +127,12 @@ Install from the repository:
   tests fail if the invocation reverts to docker's `run --rm`, which is the
   shape of the bug that once made Singularity silently useless.
 
+- **Esc clears "failed only" too.** It already cleared the `/` search, but not
+  this one, so the next Esc dropped you out to the run picker with the filter
+  still armed — you came back to a tree hiding everything that worked. It is
+  now a rung in the escape hierarchy: one press drops the filter, the next
+  leaves the run.
+
 - **"Failed only" says so in the header.** `x` is a sticky filter whose only
   announcement was a toast that fades. Leave it on and the header counts every
   task while the tree shows the two that failed — on a real run, 24 tasks and
