@@ -287,7 +287,7 @@ process) and its TSV breaks once you ask for multi-line fields like `stderr`.
 | module | command | what it does |
 |---|---|---|
 | `nf_tui.py` | `nf-tui` | the UI, and `--json`; `nf-tui nextflow run …` delegates |
-| `nf_tui_run.py` | `nf-tui-run` | launches `nextflow run` in the background and opens the UI on the new run |
+| `nf_tui_run.py` | (no command) | launches `nextflow run` in the background for `nf-tui nextflow run …` and `nf-tui-web nextflow run …` |
 | `nf_tui_serve.py` | `nf-tui-web` | serves the same app over the web via textual-serve |
 
 `nf_tui_run.launch()` waits for **this** run's log by watching for the inode to

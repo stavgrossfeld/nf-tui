@@ -51,7 +51,6 @@ jobs:
         run: |
           /tmp/clean/bin/nf-tui --help
           /tmp/clean/bin/nf-tui-web --help
-          /tmp/clean/bin/nf-tui-run --help
           /tmp/clean/bin/nf-tui-mcp --help
           # the MCP server is a stdio protocol server, so --help alone proves
           # little: check it actually answers a JSON-RPC initialize.

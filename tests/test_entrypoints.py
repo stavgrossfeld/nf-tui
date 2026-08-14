@@ -1,4 +1,4 @@
-"""Tests for the nf-tui-web, nf-tui-run and nf-tui-mcp entry points.
+"""Tests for the nf-tui-web and nf-tui-mcp entry points.
 
 These two had no coverage at all despite both having broken in the past, and
 they are what a released package exposes on PATH. Nothing here starts a real
@@ -28,21 +28,7 @@ def run_cli(script: str, *args: str, cwd: Path | None = None):
         capture_output=True, text=True, cwd=str(cwd) if cwd else None, timeout=60)
 
 
-# ---- nf-tui-run ------------------------------------------------------------
-
-def test_run_help_exits_zero_and_prints_usage():
-    # --help is a request, not an error: it belongs on stdout with exit 0.
-    r = run_cli("nf_tui_run", "--help")
-    assert r.returncode == 0
-    assert "usage: nf-tui-run" in r.stdout
-    assert r.stderr == ""
-
-
-def test_run_without_arguments_is_a_usage_error():
-    r = run_cli("nf_tui_run")
-    assert r.returncode == 1
-    assert "usage: nf-tui-run" in r.stderr
-
+# ---- launching a run (nf-tui nextflow run ... / nf-tui-web nextflow run ...)
 
 def test_run_reports_a_missing_nextflow_clearly(tmp_path, monkeypatch):
     # With no `nextflow` on PATH the user must get a plain sentence, not a
@@ -50,8 +36,7 @@ def test_run_reports_a_missing_nextflow_clearly(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit) as e:
-        monkeypatch.setattr(sys, "argv", ["nf-tui-run", "main.nf"])
-        nf_tui_run.main()
+        nf_tui_run.launch(["nextflow", "run", "main.nf"])
     assert "nextflow" in str(e.value).lower()
 
 

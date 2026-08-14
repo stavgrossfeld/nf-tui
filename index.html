@@ -243,6 +243,13 @@
       On a cluster this is the point of web mode: serve it on the login node,
       forward the port, and get the whole UI in a browser on your laptop &mdash; no
       X11, and nothing installed locally.
+      <br><br>
+      <strong>Use the same port at both ends.</strong> The page carries an absolute
+      websocket address built from <code>--host</code>/<code>--port</code>, so a
+      browser told <code>ws://127.0.0.1:8000</code> looks for the tunnel entrance on
+      <em>your</em> machine at 8000. Map it elsewhere &mdash;
+      <code>ssh -L 9000:localhost:8000</code> &mdash; and the page loads while the UI
+      never appears, with nothing on screen to say why.
     </p>
   </div>
 </section>
@@ -401,9 +408,7 @@ tail_log      search_log</code></pre>
     <pre><code><span class="cm"># what lands on your PATH</span>
 <span class="cmd">nf-tui</span>       the terminal UI
 <span class="cmd">nf-tui-web</span>   the same, in a browser
-<span class="cmd">nf-tui-mcp</span>   the same, for agents
-<span class="cmd">nf-tui-run</span>   older spelling of the
-             nextflow prefix</code></pre>
+<span class="cmd">nf-tui-mcp</span>   the same, for agents</code></pre>
   </div>
   <p class="note" style="margin-top:18px">
     Python &ge; 3.10 is the only requirement. A container engine is needed for
@@ -428,7 +433,7 @@ tail_log      search_log</code></pre>
 
 <footer class="wrap">
   <span>MIT</span>
-  <span>209 tests</span>
+  <span>207 tests</span>
   <a href="https://github.com/stavgrossfeld/nf-tui">github.com/stavgrossfeld/nf-tui</a>
 </footer>
 </div>

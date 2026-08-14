@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""nf-tui-run — launch `nextflow run ...` and watch it live in nf-tui.
+"""Launching a pipeline and watching it live.
 
-Nextflow runs in the background (its console output goes to a file so it
-doesn't fight the TUI); nf-tui opens on the run's .nextflow.log and refreshes
-as the pipeline progresses. Quitting nf-tui leaves the pipeline running.
-
-    nf-tui-run nf-core/sarek -profile test,docker --outdir results
-    nf-tui-run main.nf --input samples.csv
+Not a command of its own — `nf-tui nextflow run ...` and `nf-tui-web nextflow
+run ...` both come here. Nextflow runs in the background (its console output
+goes to a file so it doesn't fight the TUI); the UI opens on the run's
+.nextflow.log and refreshes as the pipeline progresses. Quitting the UI leaves
+the pipeline running.
 """
 from __future__ import annotations
 
@@ -18,11 +17,6 @@ import time
 from pathlib import Path
 
 
-USAGE = ("usage: nf-tui-run <nextflow run args...>\n"
-         "  e.g.  nf-tui-run nf-core/sarek -profile test,docker --outdir results\n"
-         "        nf-tui-run main.nf --input samples.csv\n\n"
-         "Runs `nextflow run` in the background and opens nf-tui on the new\n"
-         "run's .nextflow.log. Quitting nf-tui leaves the pipeline running.")
 
 
 def _log_identity(log: Path) -> tuple[int, int] | None:
@@ -131,14 +125,6 @@ def in_source_checkout(cwd: Path) -> bool:
         return False
 
 
-def main() -> None:
-    args = sys.argv[1:]
-    if args and args[0] in ("-h", "--help"):
-        print(USAGE)              # asked for help: stdout, exit 0
-        return
-    if not args:
-        sys.exit(USAGE)           # missing arguments: stderr, exit 1
-    launch(["nextflow", "run", *args])
 
 
 def start_run(cmd: list[str]):
@@ -242,6 +228,3 @@ def launch(cmd: list[str]) -> None:
             # and strands jobs already queued on a scheduler.
             print(f"  stop pipeline:   kill {proc.pid}")
 
-
-if __name__ == "__main__":
-    main()

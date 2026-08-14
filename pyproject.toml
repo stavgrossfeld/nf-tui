@@ -36,7 +36,6 @@ dev = ["pytest>=8"]
 [project.scripts]
 nf-tui = "nf_tui:main"
 nf-tui-web = "nf_tui_serve:main"
-nf-tui-run = "nf_tui_run:main"
 nf-tui-mcp = "nf_tui_mcp:main"
 
 [project.urls]

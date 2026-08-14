@@ -198,9 +198,11 @@ Install from the repository:
 
 ### Packaging
 
-- Ships `nf_tui`, `nf_tui_serve` and `nf_tui_run`. The latter two were
-  previously installed as top-level `serve` and `run`, which collide with
+- Ships three commands: `nf-tui`, `nf-tui-web` and `nf-tui-mcp`. The modules
+  were previously installed as top-level `serve` and `run`, which collide with
   existing PyPI packages of those names.
-- `nf-tui-run --help` exits 0 (it was exiting 1).
+- **`nf-tui-run` is gone.** It did exactly what `nf-tui nextflow run …` does,
+  so it was a fourth command on your PATH and a paragraph of explaining for no
+  behaviour of its own. The launcher module stays — both front ends call it.
 - CI covers Python 3.10–3.14 and installs the built wheel into a clean
   environment to check every entry point starts.

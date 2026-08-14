@@ -104,7 +104,7 @@ or with pip:
 pip install git+https://github.com/stavgrossfeld/nf-tui
 ```
 
-This puts `nf-tui`, `nf-tui-web`, `nf-tui-run` and `nf-tui-mcp` on your PATH.
+This puts `nf-tui`, `nf-tui-web` and `nf-tui-mcp` on your PATH.
 
 Not on PyPI yet, so install from the repository. Python ≥ 3.10 is the only
 requirement — no container engine is needed unless you want to view BAM/CRAM.
@@ -127,7 +127,6 @@ nf-tui-web --port 9000 nextflow run main.nf --input samples.csv
 Anything after `nextflow` is passed to Nextflow verbatim, including options that
 belong before `run` (`-log`, `-C`, …). `nf-tui-web`'s own options go *before*
 the word `nextflow`, so Nextflow's flags are never mistaken for ours.
-`nf-tui-run <args>` is the older spelling and still works.
 
 If the command asks for a container engine — `-profile docker`,
 `-with-singularity` and so on — nf-tui checks that engine is actually answering
@@ -215,6 +214,14 @@ nf-tui-web /scratch/$USER/my-run --host 127.0.0.1 --port 8000
 ssh -L 8000:localhost:8000 you@login-node
 #   then open http://localhost:8000
 ```
+
+**Use the same port on both ends.** The page carries an absolute websocket
+address built from `--host`/`--port`, so a browser told `ws://127.0.0.1:8000`
+looks for the tunnel entrance on *your* machine at 8000. Map it somewhere else
+— `ssh -L 9000:localhost:8000` — and the page loads but the UI never appears,
+with nothing on screen to say why. For the same reason `--host 0.0.0.0` does
+not work for a browser on another machine: the page then advertises
+`ws://0.0.0.0:8000`, which points at whatever host is reading it.
 
 ### Running on AWS
 
