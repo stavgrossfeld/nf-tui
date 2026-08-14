@@ -124,6 +124,13 @@ Anything after `nf-tui nextflow` is passed to Nextflow verbatim, including
 options that belong before `run` (`-log`, `-C`, …). `nf-tui-run <args>` is the
 older spelling and still works.
 
+If the command asks for a container engine — `-profile docker`,
+`-with-singularity` and so on — nf-tui checks that engine is actually answering
+before launching, and refuses with a plain sentence if it isn't. Nextflow does
+not check up front: it starts, every task dies with a connect error, and the
+console output that says so is redirected to a file, so the run looks like it
+simply did nothing.
+
 Nextflow runs in the background (console output goes to `.nf-tui-run.out`) and
 nf-tui opens on the new run's `.nextflow.log`, updating live as tasks complete.
 Quitting (`Q`) leaves the pipeline running and prints the PID and how to follow

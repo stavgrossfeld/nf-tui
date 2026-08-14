@@ -127,6 +127,14 @@ Install from the repository:
   tests fail if the invocation reverts to docker's `run --rm`, which is the
   shape of the bug that once made Singularity silently useless.
 
+- **A stopped container engine failed silently.** `nf-tui nextflow run ...
+  -profile docker` with docker down launched anyway: every task died with
+  `error during connect: ... docker.sock ... EOF`, and because nf-tui redirects
+  Nextflow's console output to `.nf-tui-run.out`, nothing said so on screen.
+  The launcher now reads `-profile` and `-with-<engine>` out of the command,
+  probes that engine, and refuses with the engine's own message rather than
+  starting a run that cannot work.
+
 ### For agents
 
 - **Failures say *why*, not just the exit status.** `Caused by:` is Nextflow's

@@ -8,6 +8,7 @@ hold, and their pre-flight checks fire instead of failing obscurely later.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -246,3 +247,79 @@ def test_mcp_reports_a_missing_run_as_a_tool_error(tmp_path):
     assert "no .nextflow.log" in replies[1]["result"]["content"][0]["text"]
     # and it kept serving afterwards
     assert replies[2]["result"]["tools"]
+
+
+# ---- container pre-flight --------------------------------------------------
+# Nextflow does not check the engine up front: it launches, every task dies
+# with a connect error, and nf-tui redirects the console output to a file — so
+# the run appears to just... not work, with nothing on screen saying why.
+
+@pytest.mark.parametrize("args,expected", [
+    (["-profile", "docker,test"], "docker"),
+    (["-profile", "test,docker"], "docker"),          # order must not matter
+    (["-profile", "test,singularity"], "singularity"),
+    (["-profile", "TEST,Docker"], "docker"),          # case must not matter
+    (["-with-docker"], "docker"),
+    (["-with-singularity"], "singularity"),
+    (["-profile", "test"], None),
+    (["-profile", "conda"], None),
+    (["/data/docker/main.nf"], None),                 # a path is not a request
+    (["--outdir", "docker"], None),                   # nor is a param value
+])
+def test_wanted_engine_reads_the_command(args, expected):
+    assert nf_tui_run.wanted_engine(["nextflow", "run", *args]) == expected
+
+
+def test_engine_problem_reports_a_missing_binary(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", str(tmp_path))         # nothing on PATH
+    assert "not on PATH" in nf_tui_run.engine_problem("docker")
+
+
+def test_engine_problem_reports_a_daemon_that_is_not_answering(monkeypatch, tmp_path):
+    """Installed but the daemon is down — the case that actually bites."""
+    fake = tmp_path / "docker"
+    fake.write_text("#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    problem = nf_tui_run.engine_problem("docker")
+    assert problem and "not answering" in problem
+    assert "Cannot connect" in problem, "the engine's own message should survive"
+
+
+def test_engine_problem_is_silent_when_the_engine_works(monkeypatch, tmp_path):
+    fake = tmp_path / "docker"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    assert nf_tui_run.engine_problem("docker") is None
+
+
+def test_launch_refuses_when_the_engine_is_down(tmp_path, monkeypatch):
+    """End to end: it must exit before starting nextflow, not after."""
+    fake = tmp_path / "docker"
+    fake.write_text("#!/bin/sh\nexit 1\n")
+    fake.chmod(0o755)
+    started = []
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    real_popen = subprocess.Popen
+
+    def spy(cmd, *a, **k):
+        # subprocess.run() is built on Popen, so the engine probe comes through
+        # here too — only the nextflow launch is the thing under test.
+        if cmd and "nextflow" in str(cmd[0]):
+            started.append(cmd)
+            raise AssertionError("nextflow must not be launched")
+        return real_popen(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        nf_tui_run.launch(["nextflow", "run", "x", "-profile", "docker,test"])
+    assert "needs docker" in str(e.value)
+    assert not started, "nextflow was launched despite the engine being down"
+
+
+def test_launch_does_not_pre_flight_without_a_container_profile(tmp_path, monkeypatch):
+    """A conda or local run must not be blocked by a missing docker."""
+    monkeypatch.setenv("PATH", str(tmp_path))         # no docker anywhere
+    assert nf_tui_run.wanted_engine(["nextflow", "run", "x", "-profile", "conda"]) is None
