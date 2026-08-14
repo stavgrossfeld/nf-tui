@@ -323,3 +323,89 @@ def test_launch_does_not_pre_flight_without_a_container_profile(tmp_path, monkey
     """A conda or local run must not be blocked by a missing docker."""
     monkeypatch.setenv("PATH", str(tmp_path))         # no docker anywhere
     assert nf_tui_run.wanted_engine(["nextflow", "run", "x", "-profile", "conda"]) is None
+
+
+def test_engine_problem_points_at_module_load_for_singularity(monkeypatch, tmp_path):
+    """singularity/apptainer missing on a cluster is a module, not an install."""
+    monkeypatch.setenv("PATH", str(tmp_path))         # nothing on PATH
+    problem = nf_tui_run.engine_problem("singularity")
+    assert problem and "module load singularity" in problem
+    # docker has no modules — the hint must not leak across engines
+    assert "module load" not in nf_tui_run.engine_problem("docker")
+
+
+def test_engine_problem_does_not_call_singularity_a_daemon(monkeypatch, tmp_path):
+    """There is no singularity daemon, so "not answering" would be wrong."""
+    fake = tmp_path / "singularity"
+    fake.write_text("#!/bin/sh\necho 'FATAL: could not use fakeroot' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    problem = nf_tui_run.engine_problem("singularity")
+    assert problem and "failing to run" in problem
+    assert "not answering" not in problem
+    assert "fakeroot" in problem, "the engine's own message should survive"
+
+
+def test_launch_tells_a_singularity_user_to_make_it_available(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))         # no singularity
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        nf_tui_run.launch(["nextflow", "run", "x", "-profile", "singularity"])
+    msg = str(e.value)
+    assert "needs singularity" in msg
+    # "Start singularity" is docker's advice and is meaningless here
+    assert "Make singularity available" in msg and "Start singularity" not in msg
+
+
+# ---- nf-tui-web launching a run --------------------------------------------
+# `nf-tui nextflow run ...` launched and watched; `nf-tui-web nextflow run ...`
+# was an argparse error ("unrecognized arguments"), because only the terminal
+# front end knew how to launch anything.
+
+@pytest.mark.parametrize("argv, ours, nf", [
+    (["/run"], ["/run"], []),
+    (["nextflow", "run", "x", "-profile", "docker"],
+     [], ["nextflow", "run", "x", "-profile", "docker"]),
+    (["--port", "9000", "nextflow", "run", "main.nf"],
+     ["--port", "9000"], ["nextflow", "run", "main.nf"]),
+])
+def test_serve_splits_our_options_from_the_nextflow_command(argv, ours, nf):
+    assert nf_tui_serve.split_argv(argv) == (ours, nf)
+
+
+def test_serve_launches_a_nextflow_command_and_serves_the_new_run(tmp_path,
+                                                                  monkeypatch):
+    log = make_run(tmp_path, n_tasks=3, n_procs=1)
+    started, captured = {}, {}
+
+    class FakeProc:
+        pid = 4242
+        def poll(self): return None
+
+    def fake_start_run(cmd):
+        started["cmd"] = cmd
+        return FakeProc(), log, None
+
+    class FakeServer:
+        def __init__(self, command, host, port):
+            captured.update(command=command, port=port)
+        def serve(self):
+            captured["served"] = True
+
+    import nf_tui_run as run_mod
+    monkeypatch.setattr(run_mod, "start_run", fake_start_run)
+    monkeypatch.setattr(nf_tui_serve, "Server", FakeServer)
+    monkeypatch.setattr(sys, "argv", [
+        "nf-tui-web", "--port", "8321",
+        "nextflow", "run", "nf-core/sarek", "-profile", "test,docker",
+        "--outdir", "out"])
+    nf_tui_serve.main()
+
+    # the whole command reaches nextflow untouched, including --outdir, which
+    # argparse used to reject as an unrecognized argument
+    assert started["cmd"] == ["nextflow", "run", "nf-core/sarek",
+                              "-profile", "test,docker", "--outdir", "out"]
+    assert captured["served"] and captured["port"] == 8321
+    assert str(log.resolve()) in captured["command"]
+    # K in the browser must be able to stop the run we started
+    assert "NF_TUI_PID=4242" in captured["command"]

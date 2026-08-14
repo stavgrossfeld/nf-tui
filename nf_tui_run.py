@@ -72,10 +72,16 @@ def engine_problem(engine: str) -> str | None:
     task fails with a connect error buried in .command.err — and because our
     console output goes to a file, nothing appears on screen at all.
     """
+    daemon = engine in ("docker", "podman")
     if shutil.which(engine) is None:
-        return f"`{engine}` is not on PATH"
-    probe = ([engine, "info"] if engine in ("docker", "podman")
-             else [engine, "--version"])
+        # On a cluster this is nearly always a module that was not loaded, so
+        # say so — "not on PATH" alone sends people looking for an install.
+        hint = "" if daemon else f" (try `module load {engine}`)"
+        return f"`{engine}` is not on PATH{hint}"
+    # docker/podman have a daemon worth pinging. singularity/apptainer are just
+    # binaries, so the most this can cheaply prove is that one runs: a setuid or
+    # user-namespace misconfiguration still only shows up on the first `exec`.
+    probe = [engine, "info"] if daemon else [engine, "--version"]
     try:
         r = subprocess.run(probe, capture_output=True, text=True, timeout=25)
     except FileNotFoundError:
@@ -85,7 +91,8 @@ def engine_problem(engine: str) -> str | None:
     if r.returncode != 0:
         detail = (r.stderr or r.stdout or "").strip().splitlines()
         first = next((l.strip() for l in detail if l.strip()), "")
-        return f"`{engine}` is installed but not answering" + (f" — {first}" if first else "")
+        state = "not answering" if daemon else "failing to run"
+        return f"`{engine}` is installed but {state}" + (f" — {first}" if first else "")
     return None
 
 
@@ -99,12 +106,13 @@ def main() -> None:
     launch(["nextflow", "run", *args])
 
 
-def launch(cmd: list[str]) -> None:
-    """Run a full nextflow command in the background and watch it in nf-tui.
+def start_run(cmd: list[str]):
+    """Pre-flight, start nextflow in the background, wait for THIS run's log.
 
-    Takes the whole command (`["nextflow", "run", ...]`) rather than just the
-    run arguments, so `nf-tui nextflow …` can pass through exactly what the
-    user typed — including any options that belong before `run`.
+    Returns (process, log_path, console_handle). Split out of launch() so the
+    web front end can start a pipeline too: `nf-tui nextflow run …` worked and
+    `nf-tui-web nextflow run …` was an argparse error, because only one of them
+    knew how to launch anything.
     """
     cwd = Path.cwd()
     console = cwd / ".nf-tui-run.out"          # nextflow's console output
@@ -117,11 +125,13 @@ def launch(cmd: list[str]) -> None:
     if engine:
         problem = engine_problem(engine)
         if problem:
+            fix = (f"Start {engine} and run it again"
+                   if engine in ("docker", "podman")
+                   else f"Make {engine} available and run it again")
             sys.exit(
                 f"nf-tui: this command needs {engine}, but {problem}.\n"
-                f"        Start {engine} and run it again — Nextflow would launch,\n"
-                f"        fail every task, and write the reason to a log instead of\n"
-                f"        the screen.")
+                f"        {fix} — Nextflow would launch, fail every\n"
+                f"        task, and write the reason to a log instead of the screen.")
 
     try:
         out = console.open("wb")
@@ -154,9 +164,22 @@ def launch(cmd: list[str]) -> None:
         print("nf-tui: no new .nextflow.log after 60s — opening what's there.",
               file=sys.stderr)
 
-    print(f"nextflow running (PID {proc.pid}); opening nf-tui…")
-    # Tell the TUI which process this is, so K can stop it.
+    # Tell the UI which process this is, so K can stop it.
     os.environ["NF_TUI_PID"] = str(proc.pid)
+    return proc, log, out
+
+
+def launch(cmd: list[str]) -> None:
+    """Run a full nextflow command in the background and watch it in nf-tui.
+
+    Takes the whole command (`["nextflow", "run", ...]`) rather than just the
+    run arguments, so `nf-tui nextflow …` can pass through exactly what the
+    user typed — including any options that belong before `run`.
+    """
+    cwd = Path.cwd()
+    console = cwd / ".nf-tui-run.out"
+    proc, log, out = start_run(cmd)
+    print(f"nextflow running (PID {proc.pid}); opening nf-tui…")
     # Open the TUI directly on this run's log (a file -> no run picker).
     sys.argv = ["nf-tui", str(log)]
     from nf_tui import main as tui

@@ -127,13 +127,25 @@ Install from the repository:
   tests fail if the invocation reverts to docker's `run --rm`, which is the
   shape of the bug that once made Singularity silently useless.
 
+- **`nf-tui-web` can launch a run too.** `nf-tui nextflow run ...` launched and
+  watched; the same command through the web front end was an argparse error
+  (`unrecognized arguments: run nf-core/sarek ...`), because only the terminal
+  entry point knew how to start anything — it took a path and nothing else.
+  Both now share one launcher, so the container pre-flight and the wait for
+  *this* run's log behave identically, and `K` in the browser can stop the run.
+  Options go before the word `nextflow`; everything after it is Nextflow's.
+
 - **A stopped container engine failed silently.** `nf-tui nextflow run ...
   -profile docker` with docker down launched anyway: every task died with
   `error during connect: ... docker.sock ... EOF`, and because nf-tui redirects
   Nextflow's console output to `.nf-tui-run.out`, nothing said so on screen.
   The launcher now reads `-profile` and `-with-<engine>` out of the command,
   probes that engine, and refuses with the engine's own message rather than
-  starting a run that cannot work.
+  starting a run that cannot work. Singularity and Apptainer get their own
+  wording: a missing binary on a cluster is usually an unloaded module, not a
+  missing install, and there is no daemon to call "not answering". The probe
+  can only prove the binary runs — a setuid or user-namespace misconfiguration
+  still surfaces on the first `exec`.
 
 ### For agents
 

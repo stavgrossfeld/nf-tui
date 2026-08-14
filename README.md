@@ -118,11 +118,16 @@ nf-tui-web /path/to/run      # same UI in a browser (http://localhost:8000)
 
 # launch a pipeline AND watch it live — just prefix your nextflow command:
 nf-tui nextflow run nf-core/sarek -profile test,docker --outdir results
+
+# same thing, watched in a browser instead of the terminal:
+nf-tui-web nextflow run nf-core/sarek -profile test,docker --outdir results
+nf-tui-web --port 9000 nextflow run main.nf --input samples.csv
 ```
 
-Anything after `nf-tui nextflow` is passed to Nextflow verbatim, including
-options that belong before `run` (`-log`, `-C`, …). `nf-tui-run <args>` is the
-older spelling and still works.
+Anything after `nextflow` is passed to Nextflow verbatim, including options that
+belong before `run` (`-log`, `-C`, …). `nf-tui-web`'s own options go *before*
+the word `nextflow`, so Nextflow's flags are never mistaken for ours.
+`nf-tui-run <args>` is the older spelling and still works.
 
 If the command asks for a container engine — `-profile docker`,
 `-with-singularity` and so on — nf-tui checks that engine is actually answering
