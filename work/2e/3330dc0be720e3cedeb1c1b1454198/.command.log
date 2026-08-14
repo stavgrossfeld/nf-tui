@@ -1,0 +1,12 @@
+WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested
+
+/// MultiQC v1.35
+
+            config | Loading config settings from: 1/multiqc_config.yml
+            config | Config 'custom_logo' path not found, skipping (nf-core-sarek_logo_light.png)
+       file_search | Search path: /Users/stav/repos/nf-tui/work/2e/3330dc0be720e3cedeb1c1b1454198
+       file_search | Only using modules: custom_content, fastqc, fastp, bbmap, picard, samtools, mosdepth, gatk, bcftools, vcftools, snpeff, vep
+    custom_content | nf-core-sarek-methods-description: Found 1 sample (html)
+    custom_content | nf-core-sarek-summary: Found 1 sample (html)
+            fastqc | Found 4 reports
+/Users/stav/repos/nf-tui/work/2e/3330dc0be720e3cedeb1c1b1454198/.command.sh: line 10:    33 Segmentation fault      multiqc --force --config 1/multiqc_config.yml .

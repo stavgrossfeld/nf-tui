@@ -1,0 +1,26 @@
+(dp0
+S'isShellCmd'
+p1
+I01
+sS'cmd'
+p2
+S'cat "/Users/stav/repos/nf-tui/work/b6/8f45fc172292ff298e2122c75a6849/strelka/workspace/genomeSegment.tmpdir/segment.chromId_000_chr22_0000.genome.S1.vcf" | "/usr/local/bin/python" -E "/usr/local/share/strelka-2.9.10-1/libexec/vcfCmdlineSwapper.py" "/usr/local/bin/configureStrelkaGermlineWorkflow.py --bam test.recal.cram --referenceFasta genome.fasta --callRegions chr22_1-40001.bed.gz --runDir strelka" | "/usr/local/share/strelka-2.9.10-1/libexec/bgzip9" -c >| "/Users/stav/repos/nf-tui/work/b6/8f45fc172292ff298e2122c75a6849/strelka/workspace/genomeSegment.tmpdir/segment.chromId_000_chr22_0000.genome.S1.vcf.gz"'
+p3
+sS'errFile'
+p4
+S'/Users/stav/repos/nf-tui/work/b6/8f45fc172292ff298e2122c75a6849/strelka/workspace/pyflow.data/logs/pyflow_tasks_stderr_log.txt'
+p5
+sS'outFile'
+p6
+S'/Users/stav/repos/nf-tui/work/b6/8f45fc172292ff298e2122c75a6849/strelka/workspace/pyflow.data/logs/pyflow_tasks_stdout_log.txt'
+p7
+sS'env'
+p8
+NsS'nCores'
+p9
+I1
+sS'cwd'
+p10
+S''
+p11
+s.

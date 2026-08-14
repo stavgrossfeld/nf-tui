@@ -1,0 +1,2 @@
+patient,sex,status,sample,cram,crai
+test,XX,0,test,out/preprocessing/recalibrated/test/test.recal.cram,out/preprocessing/recalibrated/test/test.recal.cram.crai

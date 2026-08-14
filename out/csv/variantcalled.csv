@@ -1,0 +1,2 @@
+patient,sample,variantcaller,vcf
+test,test,strelka,out/variant_calling/strelka/test/test.strelka.variants.vcf.gz

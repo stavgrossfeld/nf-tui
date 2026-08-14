@@ -1,0 +1,14 @@
+WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested
+Using GATK jar /opt/conda/share/gatk4-4.6.1.0-0/gatk-package-4.6.1.0-local.jar
+Running:
+    java -Dsamjdk.use_async_io_read_samtools=false -Dsamjdk.use_async_io_write_samtools=true -Dsamjdk.use_async_io_write_tribble=false -Dsamjdk.compression_level=2 -Xmx9830M -XX:-UsePerfData -jar /opt/conda/share/gatk4-4.6.1.0-0/gatk-package-4.6.1.0-local.jar IntervalListToBed --INPUT genome.interval_list --OUTPUT genome.bed --TMP_DIR .
+15:53:16.330 INFO  NativeLibraryLoader - Loading libgkl_compression.so from jar:file:/opt/conda/share/gatk4-4.6.1.0-0/gatk-package-4.6.1.0-local.jar!/com/intel/gkl/native/libgkl_compression.so
+[Fri Aug 14 15:53:16 GMT 2026] IntervalListToBed --INPUT genome.interval_list --OUTPUT genome.bed --TMP_DIR . --SCORE 500 --SORT true --VERBOSITY INFO --QUIET false --VALIDATION_STRINGENCY STRICT --COMPRESSION_LEVEL 2 --MAX_RECORDS_IN_RAM 500000 --CREATE_INDEX false --CREATE_MD5_FILE false --help false --version false --showHidden false --USE_JDK_DEFLATER false --USE_JDK_INFLATER false
+[Fri Aug 14 15:53:16 GMT 2026] Executing as ?@6264a95689a5 on Linux 7.0.14-orbstack-00380-ga7e0a2dc9535 amd64; OpenJDK 64-Bit Server VM 17.0.11-internal+0-adhoc..src; Deflater: Intel; Inflater: Intel; Provider GCS is available; Picard version: Version:4.6.1.0
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.apache.logging.slf4j.SLF4JServiceProvider@14b4340c]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@12abcd1e]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.apache.logging.slf4j.SLF4JServiceProvider@14b4340c]
+[Fri Aug 14 15:53:16 GMT 2026] picard.util.IntervalListToBed done. Elapsed time: 0.01 minutes.
+Runtime.totalMemory()=201326592

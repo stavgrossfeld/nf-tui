@@ -158,6 +158,7 @@
     <span class="brand">nf-tui <span class="sub">nextflow &middot; terminal</span></span>
     <span class="nav-links">
       <a href="#what">What it does</a>
+      <a href="#browser">In a browser</a>
       <a href="#agents">Agents</a>
       <a href="#install">Install</a>
       <a href="#honest">Limitations</a>
@@ -281,6 +282,36 @@
   </div>
 </section>
 
+<section id="browser">
+  <h2>In a browser</h2>
+  <p class="note" style="margin-bottom:20px">
+    <code>nf-tui-web</code> serves the same UI over a websocket &mdash; same code, same
+    keys, no separate front end to keep in sync. Still a local process reading
+    local files; nothing is uploaded anywhere.
+  </p>
+  <div class="two">
+    <pre><code><span class="cm"># serve a run at http://localhost:8000</span>
+<span class="cmd">nf-tui-web</span> /path/to/run
+
+<span class="cm"># or launch one and watch it in the browser</span>
+<span class="cmd">nf-tui-web nextflow run</span> nf-core/sarek \
+  -profile test,docker --outdir results</code></pre>
+    <pre><code><span class="cm"># on the login node, inside tmux</span>
+<span class="cmd">nf-tui-web</span> /scratch/$USER/my-run \
+  --host 127.0.0.1 --port 8000
+
+<span class="cm"># on your laptop</span>
+<span class="cmd">ssh -L</span> 8000:localhost:8000 you@login-node
+<span class="cm"># then open http://localhost:8000</span></code></pre>
+  </div>
+  <p class="note" style="margin-top:18px">
+    The second one is why it exists: the whole UI on a cluster run, in a browser
+    on your laptop, with no X11 and nothing installed locally. Its own options go
+    <em>before</em> the word <code>nextflow</code> &mdash; everything after it is handed
+    to Nextflow untouched, so its flags are never mistaken for ours.
+  </p>
+</section>
+
 <section id="agents">
   <h2>For agents</h2>
   <p class="note" style="margin-bottom:20px">
@@ -346,7 +377,7 @@ tail_log      search_log</code></pre>
 
 <footer class="wrap">
   <span>MIT</span>
-  <span>175 tests</span>
+  <span>201 tests</span>
   <a href="https://github.com/stavgrossfeld/nf-tui">github.com/stavgrossfeld/nf-tui</a>
 </footer>
 </div>

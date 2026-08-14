@@ -1,0 +1,5 @@
+chrom	length	bases	mean	min	max
+chr22	40001	390077	9.75	0	208
+chr22_region	40001	390077	9.75	0	208
+total	40001	390077	9.75	0	208
+total_region	40001	390077	9.75	0	208

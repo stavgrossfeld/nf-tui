@@ -1,0 +1,189 @@
+WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested
+WARNING: Cannot estimate sequence errors from data due to small or overly fragmented reference sequence. Sequence error estimation disabled.
+
+Successfully created workflow run script.
+To execute the workflow, run the following script and set appropriate options:
+
+/Users/stav/repos/nf-tui/work/b6/8f45fc172292ff298e2122c75a6849/strelka/runWorkflow.py
+[2026-08-14T15:54:28.457664Z] [43db005f1799] [86_1] [WorkflowRunner] Initiating pyFlow run
+[2026-08-14T15:54:28.457884Z] [43db005f1799] [86_1] [WorkflowRunner] pyFlowClientWorkflowClass: StrelkaGermlineWorkflow
+[2026-08-14T15:54:28.457902Z] [43db005f1799] [86_1] [WorkflowRunner] pyFlowVersion: 1.1.20
+[2026-08-14T15:54:28.457916Z] [43db005f1799] [86_1] [WorkflowRunner] pythonVersion: 2.7.15.final.0
+[2026-08-14T15:54:28.457928Z] [43db005f1799] [86_1] [WorkflowRunner] WorkingDir: '/Users/stav/repos/nf-tui/work/b6/8f45fc172292ff298e2122c75a6849'
+[2026-08-14T15:54:28.457940Z] [43db005f1799] [86_1] [WorkflowRunner] ProcessCmdLine: 'strelka/runWorkflow.py -m local -j 4'
+[2026-08-14T15:54:28.457952Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] mode: local
+[2026-08-14T15:54:28.457963Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] nCores: 4
+[2026-08-14T15:54:28.457973Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] memMb: 12017
+[2026-08-14T15:54:28.457984Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] dataDir: /Users/stav/repos/nf-tui/work/b6/8f45fc172292ff298e2122c75a6849/strelka/workspace/pyflow.data
+[2026-08-14T15:54:28.457995Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] isDryRun: False
+[2026-08-14T15:54:28.458005Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] isContinue: False
+[2026-08-14T15:54:28.458015Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] isForceContinue: True
+[2026-08-14T15:54:28.458037Z] [43db005f1799] [86_1] [WorkflowRunner] [RunParameters] mailTo: ''
+[2026-08-14T15:54:28.458403Z] [43db005f1799] [86_1] [TaskRunner:masterWorkflow] Starting task specification for master workflow
+[2026-08-14T15:54:28.458453Z] [43db005f1799] [86_1] [StrelkaGermlineWorkflow] Initiating Strelka germline workflow version: 2.9.10
+[2026-08-14T15:54:28.459145Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'getChromDepth_makeTmpDir' to master workflow
+[2026-08-14T15:54:28.460172Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'getChromDepth_sample000_makeTmpDir' to master workflow
+[2026-08-14T15:54:28.460665Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'getChromDepth_makeTmpDir' from master workflow
+[2026-08-14T15:54:28.460775Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'getChromDepth_sample000_estimateChromDepth_000_chr22' to master workflow
+[2026-08-14T15:54:28.460976Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'getChromDepth_sample000_catChromDepth' to master workflow
+[2026-08-14T15:54:28.461284Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'getChromDepth_mergeChromDepth' to master workflow
+[2026-08-14T15:54:28.461533Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'getChromDepth_removeTmpDir' to master workflow
+[2026-08-14T15:54:28.461949Z] [43db005f1799] [86_1] [WorkflowRunner] Adding sub-workflow task 'CallGenome' to master workflow
+[2026-08-14T15:54:28.462024Z] [43db005f1799] [86_1] [TaskRunner:masterWorkflow] Finished task specification for master workflow
+[2026-08-14T15:54:28.464164Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:28.464203Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: False
+[2026-08-14T15:54:28.464421Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 5/0/1/0/0
+[2026-08-14T15:54:28.464636Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:28.464719Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:28.464786Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:28.464839Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:28.464909Z] [43db005f1799] [86_1] [TaskRunner:getChromDepth_makeTmpDir] Task initiated on local node
+[2026-08-14T15:54:28.589968Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'getChromDepth_makeTmpDir' launched from master workflow
+[2026-08-14T15:54:28.590389Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'getChromDepth_sample000_makeTmpDir' from master workflow
+[2026-08-14T15:54:28.592478Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:28.592545Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: False
+[2026-08-14T15:54:28.592567Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 4/0/1/1/0
+[2026-08-14T15:54:28.592586Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:28.592604Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:28.592618Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:28.592629Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:28.593428Z] [43db005f1799] [86_1] [TaskRunner:getChromDepth_sample000_makeTmpDir] Task initiated on local node
+[2026-08-14T15:54:28.716810Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'getChromDepth_sample000_makeTmpDir' launched from master workflow
+[2026-08-14T15:54:28.717121Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'getChromDepth_sample000_estimateChromDepth_000_chr22' from master workflow
+[2026-08-14T15:54:28.718740Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:28.718825Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: False
+[2026-08-14T15:54:28.718851Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 3/0/1/2/0
+[2026-08-14T15:54:28.718868Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:28.718883Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:28.718897Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:28.718910Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:28.719852Z] [43db005f1799] [86_1] [TaskRunner:getChromDepth_sample000_estimateChromDepth_000_chr22] Task initiated on local node
+[2026-08-14T15:54:28.899177Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'getChromDepth_sample000_estimateChromDepth_000_chr22' launched from master workflow
+[2026-08-14T15:54:28.899487Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'getChromDepth_sample000_catChromDepth' from master workflow
+[2026-08-14T15:54:28.900868Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:28.900933Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: False
+[2026-08-14T15:54:28.900957Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 2/0/1/3/0
+[2026-08-14T15:54:28.901154Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:28.901231Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:28.901288Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:28.901305Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:28.902122Z] [43db005f1799] [86_1] [TaskRunner:getChromDepth_sample000_catChromDepth] Task initiated on local node
+[2026-08-14T15:54:29.086788Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'getChromDepth_sample000_catChromDepth' launched from master workflow
+[2026-08-14T15:54:29.087069Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'getChromDepth_mergeChromDepth' from master workflow
+[2026-08-14T15:54:29.089295Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:29.089366Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: False
+[2026-08-14T15:54:29.089390Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 1/0/1/4/0
+[2026-08-14T15:54:29.089410Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:29.089426Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:29.089444Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:29.089459Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:29.090167Z] [43db005f1799] [86_1] [TaskRunner:getChromDepth_mergeChromDepth] Task initiated on local node
+[2026-08-14T15:54:29.273393Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'getChromDepth_mergeChromDepth' launched from master workflow
+[2026-08-14T15:54:29.273590Z] [43db005f1799] [86_1] [TaskManager] Launching sub-workflow task: 'CallGenome' from master workflow
+[2026-08-14T15:54:29.273725Z] [43db005f1799] [86_1] [TaskRunner:CallGenome] Starting task specification for sub-workflow
+[2026-08-14T15:54:29.274105Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'getChromDepth_removeTmpDir' from master workflow
+[2026-08-14T15:54:29.274246Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+makeTmpDir' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.274942Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+callGenomeSegment_chromId_000_chr22_0000' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.275286Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+compressGenomeSegment_chromId_000_chr22_0000_variants' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.275465Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+compressGenomeSegment_chromId_000_chr22_0000_gVCF_S1' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.277270Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+completedAllGenomeSegments' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.277346Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:29.277373Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: False
+[2026-08-14T15:54:29.277408Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 3/0/1/5/0
+[2026-08-14T15:54:29.277432Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:29.277455Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:29.277481Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:29.277502Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:29.277639Z] [43db005f1799] [86_1] [TaskRunner:getChromDepth_removeTmpDir] Task initiated on local node
+[2026-08-14T15:54:29.278004Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+variants_concat_vcf' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.278688Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+variants_index_vcf' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.278855Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+makeTmpDir' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.279340Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+gVCF_S1_concat_vcf' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.279840Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+gVCF_S1_index_vcf' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.280093Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+addLegacyOutputLink' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.281624Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+mergeRunStats' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.281739Z] [43db005f1799] [86_1] [WorkflowRunner] Adding command task 'CallGenome+removeTmpDir' to sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.281805Z] [43db005f1799] [86_1] [TaskRunner:CallGenome] Finished task specification for sub-workflow
+[2026-08-14T15:54:29.282160Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:29.282193Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: False
+[2026-08-14T15:54:29.282214Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 8/0/2/5/0
+[2026-08-14T15:54:29.282238Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:29.282260Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:29.282285Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:29.282304Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:29.282419Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+makeTmpDir] Task initiated on local node
+[2026-08-14T15:54:29.410444Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'getChromDepth_removeTmpDir' launched from master workflow
+[2026-08-14T15:54:29.410531Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+makeTmpDir' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.410796Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+callGenomeSegment_chromId_000_chr22_0000' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:29.412684Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:29.412715Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: True
+[2026-08-14T15:54:29.412731Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 10/0/1/7/0
+[2026-08-14T15:54:29.412745Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:29.412757Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:29.412773Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:29.412784Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:29.413276Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+callGenomeSegment_chromId_000_chr22_0000] Task initiated on local node
+[2026-08-14T15:54:30.055980Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+callGenomeSegment_chromId_000_chr22_0000' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.056320Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+compressGenomeSegment_chromId_000_chr22_0000_variants' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.056745Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+compressGenomeSegment_chromId_000_chr22_0000_gVCF_S1' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.059307Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:30.059615Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: True
+[2026-08-14T15:54:30.059769Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 8/0/2/8/0
+[2026-08-14T15:54:30.059823Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:30.059885Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:30.059978Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:30.060216Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:30.060301Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+compressGenomeSegment_chromId_000_chr22_0000_variants] Task initiated on local node
+[2026-08-14T15:54:30.060646Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+compressGenomeSegment_chromId_000_chr22_0000_gVCF_S1] Task initiated on local node
+[2026-08-14T15:54:30.233218Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+compressGenomeSegment_chromId_000_chr22_0000_variants' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.233312Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+compressGenomeSegment_chromId_000_chr22_0000_gVCF_S1' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.233429Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+completedAllGenomeSegments' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.233548Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+variants_concat_vcf' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.233831Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+gVCF_S1_concat_vcf' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.235044Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+mergeRunStats' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.237356Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+variants_concat_vcf] Task initiated on local node
+[2026-08-14T15:54:30.238117Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+gVCF_S1_concat_vcf] Task initiated on local node
+[2026-08-14T15:54:30.238992Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:30.239043Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: True
+[2026-08-14T15:54:30.239061Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 4/0/3/11/0
+[2026-08-14T15:54:30.239078Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:30.239091Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:30.239106Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:30.239117Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:30.240474Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+mergeRunStats] Task initiated on local node
+[2026-08-14T15:54:30.368566Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+variants_concat_vcf' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.368682Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+mergeRunStats' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.368731Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+gVCF_S1_concat_vcf' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.368955Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+variants_index_vcf' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.369237Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+gVCF_S1_index_vcf' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.370554Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:30.370912Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: True
+[2026-08-14T15:54:30.371425Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 2/0/2/14/0
+[2026-08-14T15:54:30.371518Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:30.371613Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:30.372220Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:30.372276Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:30.373252Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+variants_index_vcf] Task initiated on local node
+[2026-08-14T15:54:30.373494Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+gVCF_S1_index_vcf] Task initiated on local node
+[2026-08-14T15:54:30.494653Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+variants_index_vcf' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.494768Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+gVCF_S1_index_vcf' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.494969Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+removeTmpDir' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.495274Z] [43db005f1799] [86_1] [TaskManager] Launching command task: 'CallGenome+addLegacyOutputLink' from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.497997Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] ===== StrelkaGermlineWorkflow StatusUpdate =====
+[2026-08-14T15:54:30.498049Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Workflow specification is complete?: True
+[2026-08-14T15:54:30.498075Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Task status (waiting/queued/running/complete/error): 0/0/2/16/0
+[2026-08-14T15:54:30.498106Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task time (hrs): 0.0000
+[2026-08-14T15:54:30.498131Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing queued task name: ''
+[2026-08-14T15:54:30.498163Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task time (hrs): 0.0000
+[2026-08-14T15:54:30.498182Z] [43db005f1799] [86_1] [WorkflowRunner] [StatusUpdate] Longest ongoing running task name: ''
+[2026-08-14T15:54:30.498304Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+removeTmpDir] Task initiated on local node
+[2026-08-14T15:54:30.498794Z] [43db005f1799] [86_1] [TaskRunner:CallGenome+addLegacyOutputLink] Task initiated on local node
+[2026-08-14T15:54:30.617716Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+addLegacyOutputLink' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:30.617820Z] [43db005f1799] [86_1] [TaskManager] Completed command task: 'CallGenome+removeTmpDir' launched from sub-workflow 'CallGenome'
+[2026-08-14T15:54:45.565616Z] [43db005f1799] [86_1] [TaskManager] Completed sub-workflow task: 'CallGenome' launched from master workflow
+[2026-08-14T15:55:00.556540Z] [43db005f1799] [86_1] [WorkflowRunner] Strelka germline workflow successfully completed.
+[2026-08-14T15:55:00.556540Z] [43db005f1799] [86_1] [WorkflowRunner] 
+[2026-08-14T15:55:00.556540Z] [43db005f1799] [86_1] [WorkflowRunner] 	workflow version: 2.9.10
+[2026-08-14T15:55:00.557416Z] [43db005f1799] [86_1] [WorkflowRunner] 
+[2026-08-14T15:55:00.557475Z] [43db005f1799] [86_1] [WorkflowRunner] Workflow successfully completed all tasks
+[2026-08-14T15:55:00.557504Z] [43db005f1799] [86_1] [WorkflowRunner] Elapsed time for full workflow: 32 sec
