@@ -320,9 +320,8 @@ verbatim real log line so the synthetic stays faithful.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Fork it, change it, ship it.
+MIT — see [LICENSE](LICENSE).
 
-The name is separate: MIT is silent on trademarks, so
-[TRADEMARK.md](TRADEMARK.md) says where the line is. Short version — if you
-distribute a fork, call it something else, and say it's based on nf-tui as
-loudly as you like.
+The name is a separate matter, since the MIT license says nothing about
+trademarks. [TRADEMARK.md](TRADEMARK.md) covers it: if you distribute a fork,
+please give it a different name.
