@@ -5,3 +5,15 @@ build/
 demo_raw.gif
 demo_raw.mp4
 dist/
+
+# What Nextflow leaves behind when a run is launched from inside the repo.
+# Easy to do while testing nf-tui on itself, and `git add -A` will take all of
+# it: 492 files and 52 MB the one time it happened. The work tree is also full
+# of symlinks into a work dir that no longer exists, which is what broke the
+# GitHub Pages build.
+.nextflow/
+.nextflow.log*
+.nf-tui-run.out
+work/
+out/
+results/

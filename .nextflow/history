@@ -1,1 +1,0 @@
-2026-08-14 11:52:43	2m 28s	special_volhard	ERR	b97952e5bac68d5deb93d4a3349a45f146be9830	b93a7815-7aeb-404f-b951-f2a4977ac8fe	nextflow run nf-core/sarek -profile docker,test --outdir out

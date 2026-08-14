@@ -440,3 +440,48 @@ def test_the_engine_refusal_stays_short(tmp_path, monkeypatch):
     assert lines[0] == "nf-tui: docker is not running, and this run needs it."
     assert "docker.sock" in lines[1], "the socket it tried is worth keeping"
     assert "check if the path" not in lines[1], "the repetition is not"
+
+
+# ---- don't run a pipeline inside nf-tui's own checkout ----------------------
+# Easy to do while testing nf-tui on itself. It cost 492 files and 52 MB in a
+# single `git add -A`, and the committed work tree was symlinks into a
+# directory that no longer existed — which broke the GitHub Pages build.
+
+def test_in_source_checkout_recognises_this_repo():
+    assert nf_tui_run.in_source_checkout(Path(nf_tui_run.__file__).resolve().parent)
+
+
+def test_in_source_checkout_ignores_someone_elses_project(tmp_path):
+    # a pipeline repo that happens to have a pyproject and a python file
+    (tmp_path / "nf_tui.py").write_text("# not ours\n")
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "my-pipeline"\n')
+    assert not nf_tui_run.in_source_checkout(tmp_path)
+    # and a bare directory
+    assert not nf_tui_run.in_source_checkout(tmp_path / "nowhere")
+
+
+def test_launch_refuses_inside_the_source_checkout(monkeypatch):
+    monkeypatch.chdir(Path(nf_tui_run.__file__).resolve().parent)
+    monkeypatch.delenv("NF_TUI_ALLOW_HERE", raising=False)
+    started = []
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda *a, **k: started.append(a) or (_ for _ in ()).throw(
+                            AssertionError("nextflow must not be launched")))
+    with pytest.raises(SystemExit) as e:
+        nf_tui_run.launch(["nextflow", "run", "main.nf"])
+    msg = str(e.value)
+    assert "own source tree" in msg
+    assert "NF_TUI_ALLOW_HERE" in msg, "it has to say how to override"
+    assert not started
+
+
+def test_the_override_lets_you_run_here_anyway(monkeypatch, tmp_path):
+    """Deliberate is fine — this only exists to catch the accident."""
+    monkeypatch.chdir(Path(nf_tui_run.__file__).resolve().parent)
+    monkeypatch.setenv("NF_TUI_ALLOW_HERE", "1")
+    # stop before anything is actually launched: a missing engine is enough
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(SystemExit) as e:
+        nf_tui_run.launch(["nextflow", "run", "main.nf", "-profile", "docker"])
+    assert "own source tree" not in str(e.value)
+    assert "docker is not on PATH" in str(e.value)

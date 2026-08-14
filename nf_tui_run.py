@@ -115,6 +115,22 @@ def engine_problem(engine: str) -> tuple[str, str] | None:
     return None
 
 
+def in_source_checkout(cwd: Path) -> bool:
+    """True if `cwd` is nf-tui's own source tree.
+
+    Keyed on this project's own pyproject name rather than a guess like "there
+    is a .git here", so it fires exactly where it should: nobody's pipeline
+    repo is called nf-tui, and an installed user never sits in this directory.
+    """
+    pyproject = cwd / "pyproject.toml"
+    if not (cwd / "nf_tui.py").is_file() or not pyproject.is_file():
+        return False
+    try:
+        return 'name = "nf-tui"' in pyproject.read_text(errors="replace")
+    except OSError:
+        return False
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args and args[0] in ("-h", "--help"):
@@ -135,6 +151,17 @@ def start_run(cmd: list[str]):
     """
     cwd = Path.cwd()
     console = cwd / ".nf-tui-run.out"          # nextflow's console output
+
+    # Refuse to run inside nf-tui's own checkout. Easy to do by accident while
+    # testing nf-tui on itself, and the mess is real: work/, out/, .nextflow/
+    # and two logs land in the repo, `git add -A` takes all of it (492 files
+    # and 52 MB the once), and the work tree is symlinks into a directory that
+    # will not exist tomorrow.
+    if in_source_checkout(cwd) and not os.environ.get("NF_TUI_ALLOW_HERE"):
+        sys.exit(
+            "nf-tui: this is nf-tui's own source tree, and a run here would\n"
+            "        scatter work/, out/ and .nextflow/ through the repo.\n"
+            "        cd somewhere else first, or set NF_TUI_ALLOW_HERE=1.")
 
     # Pre-flight the container engine. Without this the run launches, every
     # task dies with a connect error, and the console output that would have

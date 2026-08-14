@@ -1,5 +1,0 @@
-FILTER	N_VARIANTS	N_Ts	N_Tv	Ts/Tv
-PASS	3	0	0	-nan
-LowDepth;LowGQX;NoPassedVariantGTs	3	0	0	-nan
-LowGQX;NoPassedVariantGTs	1	0	0	-nan
-LowDepth;NoPassedVariantGTs	1	0	0	-nan

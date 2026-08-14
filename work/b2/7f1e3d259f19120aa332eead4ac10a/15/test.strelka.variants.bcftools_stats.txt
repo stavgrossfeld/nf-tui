@@ -1,1 +1,0 @@
-/Users/stav/repos/nf-tui/work/40/c0df0cceb4466f4c7fdd3a46329d5a/test.strelka.variants.bcftools_stats.txt

@@ -1,2 +1,0 @@
-patient,sex,status,sample,cram,crai,table
-test,XX,0,test,out/preprocessing/markduplicates/test/test.md.cram,out/preprocessing/markduplicates/test/test.md.cram.crai,out/preprocessing/recal_table/test/test.recal.table
