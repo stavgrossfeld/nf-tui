@@ -95,19 +95,26 @@ re-run, no account.
 With [uv](https://docs.astral.sh/uv/):
 
 ```bash
+# a released version (recommended)
+uv tool install git+https://github.com/stavgrossfeld/nf-tui@v1.0.0
+
+# or the latest main, which moves
 uv tool install git+https://github.com/stavgrossfeld/nf-tui
 ```
 
 or with pip:
 
 ```bash
-pip install git+https://github.com/stavgrossfeld/nf-tui
+pip install git+https://github.com/stavgrossfeld/nf-tui@v1.0.0
 ```
 
 This puts `nf-tui`, `nf-tui-web` and `nf-tui-mcp` on your PATH.
 
-Not on PyPI yet, so install from the repository. Python ≥ 3.10 is the only
-requirement — no container engine is needed unless you want to view BAM/CRAM.
+Not on PyPI yet, so install from the repository. Without `@v1.0.0` you get
+whatever `main` points at when you run the command, which is where new work
+lands — pin the tag unless you want that. Python ≥ 3.10 is the only
+requirement, and no container engine is needed unless you want to view
+BAM/CRAM.
 
 ## Usage
 
@@ -197,8 +204,8 @@ login node against a run on shared storage (`/scratch`, `$WORK`, …):
 
 ```bash
 # one-time, in your home (no admin needed)
-uv tool install git+https://github.com/stavgrossfeld/nf-tui
-# or: pip install --user git+https://github.com/stavgrossfeld/nf-tui
+uv tool install git+https://github.com/stavgrossfeld/nf-tui@v1.0.0
+# or: pip install --user git+https://github.com/stavgrossfeld/nf-tui@v1.0.0
 
 nf-tui /scratch/$USER/my-run          # watch a run over SSH
 ```

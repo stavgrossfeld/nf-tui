@@ -3,7 +3,7 @@
 ## 1.0.0 — first public release
 
 Install from the repository:
-`uv tool install git+https://github.com/stavgrossfeld/nf-tui`.
+`uv tool install git+https://github.com/stavgrossfeld/nf-tui@v1.0.0`.
 
 ### Nextflow coverage
 
