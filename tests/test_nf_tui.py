@@ -3327,9 +3327,15 @@ def test_remote_failure_does_not_blame_a_set_endpoint_for_a_403(monkeypatch):
     assert "access denied (403)" in why and "it is unset" not in why
 
 
-def test_remote_failure_explains_missing_credentials():
+@pytest.mark.parametrize("stderr", [
+    _NO_CREDS,
+    # `ls` words it differently from `cp` — this one came from a real terminal
+    'aws: [ERROR]: An error occurred (NoCredentials): Unable to locate '
+    'credentials. You can configure credentials by running "aws login".',
+])
+def test_remote_failure_explains_missing_credentials(stderr):
     import nf_tui as m
-    assert "no AWS credentials" in m.remote_failure(_NO_CREDS)
+    assert "no AWS credentials" in m.remote_failure(stderr)
 
 
 def test_remote_failure_keeps_the_stores_own_reason():

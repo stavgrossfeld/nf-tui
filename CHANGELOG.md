@@ -152,6 +152,16 @@ Install from the repository:
   the store: logs, metrics from `.command.trace`, output listings, and paged
   reads (text by byte range, gzip streamed by line). Checked on a real
   nf-core/sarek run uploaded to MinIO, including its two failed tasks.
+- **A `.nextflow.log` in S3 opens by URI.** `nf-tui s3://bucket/…/.nextflow.log`
+  used to turn the URI into the local path `s3:/bucket/…` and report that no log
+  was there. nf-tui, `nf-tui-web` and the MCP tools now copy the object into a
+  local cache and read the copy — every existing view works on it unchanged —
+  and re-check it every 10 seconds, re-fetching only when the object changed.
+  The copy is stamped with the object's own modification time: dated "now", a
+  finished run looked live for 20 seconds after opening. A copy left by an
+  earlier session is always re-checked before use. (Nextflow itself can't write
+  its log to S3 — `-log s3://…` creates a local folder named `s3:` — so this is
+  for logs something else uploaded.)
 - **An unreadable store no longer looks like an empty one.** Every read returned
   None for "not there" *and* for "couldn't read", so a wrong endpoint, bad
   credentials or a missing bucket all showed as "(no output in the object store

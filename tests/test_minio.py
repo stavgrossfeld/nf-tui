@@ -179,8 +179,12 @@ def s3run(minio, tmp_path_factory):
     s3log = base / "launch" / ".nextflow.log"
     s3log.parent.mkdir()
     s3log.write_text(local_log.read_text().replace(str(work), f"s3://{BUCKET}/work"))
+    # The log itself, in the bucket too — the shape of a head job's upload.
+    log_uri = f"s3://{BUCKET}/logs/run1/.nextflow.log"
+    aws("s3", "cp", "--only-show-errors", str(s3log), log_uri, env=minio.env)
     return SimpleNamespace(
-        log=s3log, run=str(s3log), failed_hash=failed.hash, failed_local=wd,
+        log=s3log, run=str(s3log), log_uri=log_uri,
+        failed_hash=failed.hash, failed_local=wd,
         failed_uri=failed.workdir.replace(str(work), f"s3://{BUCKET}/work"))
 
 
@@ -400,3 +404,158 @@ def test_ui_says_the_store_is_unreachable_rather_than_empty(s3run, monkeypatch):
         return True
 
     assert _drive(NfScope(s3run.log), steps)
+
+
+# ---- a .nextflow.log that lives in S3 ------------------------------------------
+# Nextflow can't write its log there (-log s3://… makes a local "s3:" folder),
+# so these model what does happen: something uploads it, and nf-tui is handed
+# the URI. The log is mirrored to a local cache; work dirs stay in S3.
+
+import json                                                    # noqa: E402
+
+import nf_tui_serve                                            # noqa: E402
+
+
+@pytest.fixture
+def cache(tmp_path, monkeypatch):
+    """A cache of this test's own, and no mirrors left over from another test."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    nf._log_mirrors.clear()
+    yield tmp_path / "xdg" / "nf-tui" / "logs"
+    nf._log_mirrors.clear()
+
+
+def _put(minio, key: str, text: str, tmp_path: Path) -> str:
+    body = tmp_path / f"upload-{uuid.uuid4().hex[:6]}.log"
+    body.write_text(text)
+    uri = f"s3://{BUCKET}/{key}"
+    aws("s3", "cp", "--only-show-errors", str(body), uri, env=minio.env)
+    return uri
+
+
+def test_cli_json_reads_a_log_stored_in_s3(s3run, cache, monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["nf-tui", "--json", s3run.log_uri])
+    nf.main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["log"] == s3run.log_uri, "report should name the object, not the cache"
+    assert Path(out["log_cache"]).is_relative_to(cache)
+    assert len(out["tasks"]) == len(nf.parse_log(s3run.log))
+    failed = next(t for t in out["tasks"] if t["hash"] == s3run.failed_hash)
+    assert failed["logs"]["err"] == ERR           # work dirs are still read from S3
+
+
+def test_cli_says_plainly_when_the_s3_log_is_missing(cache, monkeypatch):
+    """It used to mangle the URI into a local path and report that instead."""
+    uri = f"s3://{BUCKET}/logs/nope/.nextflow.log"
+    monkeypatch.setattr("sys.argv", ["nf-tui", "--json", uri])
+    with pytest.raises(SystemExit) as e:
+        nf.main()
+    assert str(e.value) == f"nf-tui: there is no object at {uri}"
+
+
+def test_a_prefix_is_not_a_log(cache):
+    with pytest.raises(nf.RemoteError, match="is a prefix, not a log"):
+        nf.mirror_log(f"s3://{BUCKET}/logs/run1/")
+
+
+def test_the_copy_carries_the_objects_own_time(s3run, cache):
+    """A copy dated "now" would make every finished run look live for 20s."""
+    m = nf.mirror_log(s3run.log_uri)
+    assert m.local.is_relative_to(cache)
+    assert m.local.read_text() == s3run.log.read_text()
+    assert abs(m.local.stat().st_mtime - nf._s3_head(s3run.log_uri)["modified"]) < 1
+
+
+def test_an_unchanged_log_is_not_downloaded_again(s3run, cache, monkeypatch):
+    m = nf.mirror_log(s3run.log_uri)
+    downloads = []
+    monkeypatch.setattr(nf, "_download_log", lambda *a: downloads.append(a))
+    assert nf.refresh_log_mirror(m, force=True) is False
+    assert downloads == [], "a finished run's log was fetched again"
+
+
+def test_a_changed_log_is_picked_up_but_checks_are_paced(minio, cache, tmp_path):
+    uri = _put(minio, "logs/growing/.nextflow.log", "first line\n", tmp_path)
+    m = nf.mirror_log(uri)
+    _put(minio, "logs/growing/.nextflow.log", "first line\nsecond line\n", tmp_path)
+    assert nf.refresh_log_mirror(m) is False, "checked again inside the pacing window"
+    assert nf.refresh_log_mirror(m, force=True) is True
+    assert m.local.read_text() == "first line\nsecond line\n"
+
+
+def test_a_failed_recheck_keeps_the_last_copy(s3run, cache, monkeypatch):
+    m = nf.mirror_log(s3run.log_uri)
+    before = m.local.read_text()
+    monkeypatch.setenv("AWS_ENDPOINT_URL", _closed_endpoint())
+    with pytest.raises(nf.RemoteError, match="could not connect"):
+        nf.refresh_log_mirror(m, force=True)
+    assert m.local.read_text() == before
+
+
+def test_a_copy_cached_by_an_earlier_session_is_not_trusted(minio, cache, tmp_path):
+    uri = _put(minio, "logs/stale/.nextflow.log", "old run\n", tmp_path)
+    nf.mirror_log(uri)
+    nf._log_mirrors.clear()                       # a new session, same cache dir
+    _put(minio, "logs/stale/.nextflow.log", "new run\n", tmp_path)
+    assert nf.mirror_log(uri).local.read_text() == "new run\n"
+
+
+def test_mcp_get_failures_takes_an_s3_log(s3run, cache):
+    got = mcp.tool_get_failures(s3run.log_uri)
+    assert got["run"] == s3run.log_uri
+    failure = next(f for f in got["failures"] if f["hash"] == s3run.failed_hash)
+    assert failure["logs"]["err"] == ERR
+
+
+def test_mcp_explains_that_list_runs_is_local_only(cache):
+    with pytest.raises(ValueError, match="searches local directories"):
+        mcp.tool_list_runs(f"s3://{BUCKET}/logs/")
+
+
+def test_web_serves_an_s3_log_by_its_uri(s3run, cache, monkeypatch):
+    """The served app gets the URI, so it keeps re-checking on its own."""
+    seen = {}
+
+    class FakeServer:
+        def __init__(self, command, host, port):
+            seen["command"] = command
+
+        def serve(self):
+            pass
+
+    monkeypatch.setattr(nf_tui_serve, "Server", FakeServer)
+    nf_tui_serve.main(["--port", "8123", s3run.log_uri])
+    assert seen["command"].endswith(" " + s3run.log_uri)
+
+
+def test_web_refuses_a_missing_s3_log_in_the_terminal(cache, monkeypatch):
+    uri = f"s3://{BUCKET}/logs/nope/.nextflow.log"
+    with pytest.raises(SystemExit) as e:
+        nf_tui_serve.main([uri])
+    assert "there is no object at" in str(e.value)
+
+
+def test_ui_follows_a_log_that_grows_in_s3(minio, s3run, cache, tmp_path,
+                                          monkeypatch):
+    """A head job re-uploading its log mid-run: new tasks appear on screen."""
+    monkeypatch.setattr(nf, "LOG_MIRROR_RECHECK", 0.5)
+    lines = s3run.log.read_text().splitlines(keepends=True)
+    half = "".join(lines[: len(lines) // 2])
+    key = "logs/live/.nextflow.log"
+    m = nf.mirror_log(_put(minio, key, half, tmp_path))
+    first = len(nf.parse_log(m.local))
+
+    async def steps(app, pilot):
+        await _settle(app, pilot)
+        assert len(app.tasks) == first
+        assert m.uri in app.sub_title, "header should show where the log is"
+        _put(minio, key, "".join(lines), tmp_path)
+        for _ in range(60):                       # up to ~15s
+            await pilot.pause(0.25)
+            if len(app.tasks) > first:
+                break
+        assert len(app.tasks) == len(nf.parse_log(s3run.log)), \
+            f"still showing {len(app.tasks)} tasks after the log grew in S3"
+        return True
+
+    assert _drive(NfScope(m.local, mirror=m), steps)

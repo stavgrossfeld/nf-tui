@@ -263,6 +263,22 @@ such bucket — the pane says which, rather than reporting an empty log. The sam
 goes for `--json` (a top-level `remote_error`, and `logs_error` per task) and for
 the MCP tools, which return the store's reason as an error.
 
+**The log itself can be in S3 too.** Nextflow always writes `.nextflow.log`
+locally — `-log s3://…` just creates a folder named `s3:` — but if your head job
+or a script uploads it, open it by URI:
+
+```bash
+nf-tui s3://my-bucket/logs/run42/.nextflow.log
+nf-tui --json --failed s3://my-bucket/logs/run42/.nextflow.log
+```
+
+nf-tui copies the log into `~/.cache/nf-tui/logs/` (or `$XDG_CACHE_HOME`) and
+reads the copy. While it's open it checks the object about every 10 seconds and
+fetches it again only if it changed, so a log that's re-uploaded during a run
+keeps updating on screen. If a check fails, the last copy stays up and you're
+told once. It takes one log per URI — not a prefix to search. `nf-tui-web` and
+the MCP tools accept the same URIs.
+
 One thing that stays local-only: telling *running* from *queued* uses
 `.command.begin` in each work dir, and probing that per task over S3 on every
 refresh would be far too slow — cloud tasks in flight are reported together

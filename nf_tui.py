@@ -500,6 +500,128 @@ def remote_head_gzip(uri: str, lines: int, skip: int = 0) -> list[str]:
     return out
 
 
+# ---- a .nextflow.log kept in object storage ---------------------------------
+# Nextflow can't write its log to S3 — `-log s3://b/k` just makes a local
+# directory literally named "s3:" — so a log in a bucket was put there by
+# something else: a head job uploading it, or a copy made after the run. nf-tui
+# reads the log in a dozen places (parsing, the run log pane, less, the tailer,
+# the MCP tools), all on a local file. Rather than teach each of them object
+# storage, the log is mirrored into a local cache and everything reads the copy.
+# Work dirs are still read from the store directly, as before.
+
+LOG_MIRROR_RECHECK = 10.0      # seconds between checks that the object changed
+
+
+def log_cache_dir() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "nf-tui" / "logs"
+
+
+@dataclass
+class LogMirror:
+    uri: str                    # s3://bucket/key
+    local: Path                 # the cached copy everything else reads
+    etag: str | None = None     # None until the first successful download
+    checked: float = 0.0        # time.monotonic() of the last check
+
+
+_log_mirrors: dict[str, LogMirror] = {}
+
+
+def _s3_head(uri: str) -> dict:
+    """ETag and last-modified time of an object. RemoteError if unreadable."""
+    if shutil.which("aws") is None:
+        raise RemoteError("`aws` is not installed, so s3:// logs can't be read")
+    bucket, key = _s3_split(uri)
+    try:
+        r = subprocess.run(["aws", "s3api", "head-object", "--bucket", bucket,
+                            "--key", key, "--output", "json"],
+                           capture_output=True, text=True, timeout=REMOTE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise RemoteError(f"checking {uri} timed out after {REMOTE_TIMEOUT}s")
+    if r.returncode != 0:
+        # For a log, absence is an error: there is nothing to open.
+        raise RemoteError(remote_failure(r.stderr) or f"there is no object at {uri}")
+    meta = json.loads(r.stdout or "{}")
+    modified = None
+    try:
+        modified = datetime.fromisoformat(meta["LastModified"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        pass
+    return {"etag": meta.get("ETag"), "modified": modified}
+
+
+def _download_log(uri: str, dest: Path, modified: float | None) -> None:
+    """Fetch an object to `dest`, atomically, stamped with its own mtime.
+
+    Written beside `dest` and renamed into place, so a refresh that reads the
+    log mid-download sees the old copy or the new one, never half of one. The
+    stamp matters: nf-tui calls a run live when its log was written in the last
+    ~20s, so a copy dated "now" made every finished run look live after opening.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(f".{dest.name}.part")
+    try:
+        r = subprocess.run(["aws", "s3", "cp", "--only-show-errors", uri, str(part)],
+                           capture_output=True, text=True,
+                           timeout=REMOTE_TIMEOUT * 10)
+    except subprocess.TimeoutExpired:
+        part.unlink(missing_ok=True)
+        raise RemoteError(f"downloading {uri} timed out")
+    if r.returncode != 0:
+        part.unlink(missing_ok=True)
+        raise RemoteError(remote_failure(r.stderr) or f"there is no object at {uri}")
+    if modified is not None:
+        os.utime(part, (modified, modified))
+    os.replace(part, dest)
+
+
+def refresh_log_mirror(m: LogMirror, force: bool = False) -> bool:
+    """Re-download the log if the object changed. True if the copy changed.
+
+    One HEAD request when nothing changed, which is the usual case — a finished
+    run's log never does. Without `force`, checks are at most once per
+    LOG_MIRROR_RECHECK, so repeated MCP calls don't each cost a request.
+    """
+    now = time.monotonic()
+    if not force and m.etag is not None and now - m.checked < LOG_MIRROR_RECHECK:
+        return False
+    head = _s3_head(m.uri)
+    m.checked = now
+    if head["etag"] is not None and head["etag"] == m.etag and m.local.is_file():
+        return False
+    _download_log(m.uri, m.local, head["modified"])
+    m.etag = head["etag"]
+    return True
+
+
+def mirror_log(uri: str) -> LogMirror:
+    """A local, up-to-date copy of a .nextflow.log stored at an s3:// URI.
+
+    Always checked against the store on first use, so a copy cached by an
+    earlier session is never served as current.
+    """
+    scheme = remote_scheme(uri)
+    if scheme != "s3":
+        raise RemoteError(f"opening a log from {scheme}:// isn't supported yet "
+                          f"(only s3://)")
+    bucket, key = _s3_split(uri)
+    if not key or key.endswith("/"):
+        raise RemoteError(f"{uri} is a prefix, not a log — give the object "
+                          f"itself, e.g. {uri.rstrip('/')}/.nextflow.log")
+    root = log_cache_dir()
+    local = (root / bucket / key)
+    if ".." in Path(key).parts or root not in local.parents:
+        raise RemoteError(f"refusing to cache {uri}: its key leaves the cache dir")
+    m = _log_mirrors.get(uri)
+    if m is None:
+        m = _log_mirrors[uri] = LogMirror(uri=uri, local=local)
+        refresh_log_mirror(m, force=True)
+    else:
+        refresh_log_mirror(m)
+    return m
+
+
 def remote_forget(prefix: str) -> None:
     """Drop cached reads under a prefix, so a live task's log can be re-read."""
     for key in [k for k in _remote_cache if k[1].startswith(prefix)]:
@@ -1588,9 +1710,13 @@ class NfScope(App):
         Binding("Q", "quit", "Quit"),
     ]
 
-    def __init__(self, target: Path):
+    def __init__(self, target: Path, mirror: LogMirror | None = None):
         super().__init__()
         self.target = target                 # dir to search, or a .nextflow.log
+        # Set when the log lives in object storage: `target` is then the local
+        # copy, and this keeps it current.
+        self._mirror = mirror
+        self._mirror_error: str | None = None
         if target.is_file():
             self.log_file: Path | None = target
             self._runs: list[RunInfo] = []
@@ -1675,10 +1801,33 @@ class NfScope(App):
 
     def on_mount(self) -> None:
         self.set_interval(REFRESH_SECONDS, self._tick)  # live updates
+        if self._mirror is not None:
+            # Off the refresh path: a check is a network call, and the 1s tick
+            # already notices when the copy on disk changes.
+            self.set_interval(LOG_MIRROR_RECHECK, self._recheck_log_mirror)
         if self.log_file is not None:
             self.load_run(self.log_file)
         else:
             self._open_picker()             # multiple runs -> choose one first
+
+    @work(thread=True, exclusive=True, group="log-mirror")
+    def _recheck_log_mirror(self) -> None:
+        try:
+            refresh_log_mirror(self._mirror, force=True)   # the timer paces it
+            error = None
+        except RemoteError as e:
+            error = str(e)
+        self.call_from_thread(self._log_mirror_checked, error)
+
+    def _log_mirror_checked(self, error: str | None) -> None:
+        # Say so once when the store stops answering, and once when it's back —
+        # not every ten seconds. The last good copy stays on screen meanwhile.
+        if error and error != self._mirror_error:
+            self.notify(f"couldn't re-check {self._mirror.uri}: {error} — "
+                        f"showing the last copy", severity="warning", timeout=10)
+        elif not error and self._mirror_error:
+            self.notify(f"{self._mirror.uri} is reachable again")
+        self._mirror_error = error
 
     def _tick(self) -> None:
         # A transient error on the 1s timer (e.g. the log replaced mid-read on a
@@ -1853,7 +2002,8 @@ class NfScope(App):
             summary += f' · filter "{self.query_str}": {len(self._visible_tasks())} shown'
         if self.sort_mode != "order":
             summary += f" · sorted by {self.sort_mode}"
-        loc = str(self.log_file).replace(str(Path.home()), "~")
+        loc = (self._mirror.uri if self._mirror is not None
+               else str(self.log_file).replace(str(Path.home()), "~"))
         self.sub_title = f"{filled}{track} {summary}  —  {loc}"   # window title
         # The bar carries the run's disposition: red if anything failed, yellow
         # while work is still moving, green once it's cleanly done.
@@ -3620,7 +3770,7 @@ def _tail_text(path: Path, limit: int = LOG_CHARS) -> str | None:
 
 
 def run_report(log_file: Path, *, logs: str = "failed",
-               failed_only: bool = False) -> dict:
+               failed_only: bool = False, source: str | None = None) -> dict:
     """Everything nf-tui knows about a run, as plain data.
 
     Built for agents and scripts: the same parsing the UI uses, but nested per
@@ -3730,9 +3880,11 @@ def run_report(log_file: Path, *, logs: str = "failed",
         out_tasks.append(entry)
 
     report_extra = {"remote_error": remote_error} if remote_error else {}
+    if source:                  # the log was read from a copy of this object
+        report_extra["log_cache"] = str(log_file)
     return {
         **report_extra,
-        "log": str(log_file),
+        "log": source or str(log_file),
         "work_dir": str(work_root),
         "live": bool(tasks) and any(
             t.status.upper() in IN_FLIGHT for t in tasks),
@@ -3788,22 +3940,35 @@ def main() -> None:
                          "every SECS while the run is live")
     args = ap.parse_args()
 
-    target = Path(args.path).expanduser()
-    try:
-        target = target.resolve()
-    except OSError:
-        sys.exit(
-            f"nf-tui: cannot access '{args.path}'. If this directory was deleted "
-            "and recreated by a running pipeline, your shell is in a stale copy — "
-            "run  cd .. && cd -  (or pass an absolute path) and try again.")
+    mirror = None
+    if remote_scheme(args.path):
+        # Checked here, before Path() — which turns "s3://b/k" into the local
+        # "s3:/b/k" and then reports that nothing is there.
+        try:
+            mirror = mirror_log(args.path)
+        except RemoteError as e:
+            sys.exit(f"nf-tui: {e}")
+        target = mirror.local
+    else:
+        target = Path(args.path).expanduser()
+        try:
+            target = target.resolve()
+        except OSError:
+            sys.exit(
+                f"nf-tui: cannot access '{args.path}'. If this directory was "
+                "deleted and recreated by a running pipeline, your shell is in a "
+                "stale copy — run  cd .. && cd -  (or pass an absolute path) and "
+                "try again.")
 
     if not target.is_file() and not gather_runs(target):
         sys.exit(f"nf-tui: no .nextflow.log found under {target}")
 
     if args.json:
         log = target if target.is_file() else gather_runs(target)[0].path
+        source = mirror.uri if mirror else None
         emit = lambda: json.dumps(                      # noqa: E731
-            run_report(log, logs=args.logs, failed_only=args.failed))
+            run_report(log, logs=args.logs, failed_only=args.failed,
+                       source=source))
         if not args.watch:
             print(emit())
             return
@@ -3811,6 +3976,12 @@ def main() -> None:
         # they arrive rather than waiting for the run to finish.
         try:
             while True:
+                if mirror is not None:
+                    try:
+                        refresh_log_mirror(mirror)
+                    except RemoteError as e:
+                        print(f"nf-tui: couldn't re-check {mirror.uri}: {e} — "
+                              f"using the last copy", file=sys.stderr)
                 print(emit(), flush=True)
                 report = run_report(log, logs="none")
                 if not report["live"]:
@@ -3820,7 +3991,7 @@ def main() -> None:
             return
     # One app for the whole session: the run picker is a screen inside it
     # (so it works over the web via textual-serve, which serves one app).
-    NfScope(target).run()
+    NfScope(target, mirror=mirror).run()
 
 
 if __name__ == "__main__":

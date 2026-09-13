@@ -65,6 +65,16 @@ def main(argv: list[str] | None = None) -> None:
         proc, log, _out = start_run(nf_cmd)
         print(f"nextflow running (PID {proc.pid}); serving nf-tui…")
         target = log
+    elif args.run.startswith(("s3://", "gs://")):
+        # Checked once here so a bad URI fails in the terminal. The served app
+        # is handed the URI, not the cached copy, so it keeps re-checking the
+        # log for as long as the browser has it open.
+        from nf_tui import RemoteError, mirror_log
+        try:
+            mirror_log(args.run)
+        except RemoteError as e:
+            sys.exit(f"nf-tui-web: {e}")
+        target = args.run
     else:
         # Resolve to an absolute path now (the served command runs with its own
         # working directory, so a bare "." would be ambiguous).

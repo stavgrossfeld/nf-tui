@@ -45,10 +45,22 @@ def _log_path(run: str) -> Path:
 
 
 def _require_log(run: str) -> Path:
+    if nf.remote_scheme(run):
+        # A log in object storage is mirrored locally; repeat calls within a few
+        # seconds reuse the copy instead of re-checking the store every time.
+        try:
+            return nf.mirror_log(run).local
+        except nf.RemoteError as e:
+            raise ValueError(f"couldn't read {run}: {e}")
     log = _log_path(run)
     if not log.exists():
         raise ValueError(f"no .nextflow.log at {log}")
     return log
+
+
+def _source(run: str) -> str | None:
+    """The URI a run's log came from, when it was read from object storage."""
+    return run if nf.remote_scheme(run) else None
 
 
 def _find_task(report: dict, task_hash: str) -> dict | None:
@@ -106,6 +118,9 @@ def tool_list_runs(root: str = ".", limit: int = 25) -> dict:
     Uses the same discovery the run picker does, so what an agent sees here and
     what a person sees in the UI cannot drift apart.
     """
+    if nf.remote_scheme(root):
+        raise ValueError("list_runs searches local directories; pass an s3:// "
+                         ".nextflow.log straight to get_run or get_failures")
     infos = nf.gather_runs(Path(root).expanduser())
     infos.sort(key=lambda r: r.mtime, reverse=True)
     out = []
@@ -131,7 +146,8 @@ def tool_get_run(run: str, include_tasks: bool = True,
     """Progress and every task's state. Logs are deliberately not included —
     use get_task or get_failures, so one call can't flood a context window."""
     log = _require_log(run)
-    rep = nf.run_report(log, logs="none", failed_only=failed_only)
+    rep = nf.run_report(log, logs="none", failed_only=failed_only,
+                        source=_source(run))
     if not include_tasks:
         rep.pop("tasks", None)
         return rep
@@ -152,7 +168,8 @@ def tool_get_failures(run: str) -> dict:
     it answers "what broke and why" in a single round trip.
     """
     log = _require_log(run)
-    rep = nf.run_report(log, logs="failed", failed_only=True)
+    rep = nf.run_report(log, logs="failed", failed_only=True,
+                        source=_source(run))
     failures = []
     for t in rep.get("tasks", []):
         err = t.get("error") or {}
@@ -174,7 +191,7 @@ def tool_get_failures(run: str) -> dict:
             "logs": t.get("logs"),
         })
     return {
-        "run": str(log.parent),
+        "run": _source(run) or str(log.parent),
         "progress": rep.get("progress"),
         "failed_count": len(failures),
         "failures": failures,
