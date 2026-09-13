@@ -66,6 +66,26 @@ def _find_task(report: dict, task_hash: str) -> dict | None:
     return None
 
 
+def _outputs(workdir: str) -> list[dict]:
+    """A task's visible outputs as {name, size, dir}, local or in object storage.
+
+    For a remote work dir a failed listing raises ValueError with the store's
+    reason, so the agent learns the store is unreachable rather than being told
+    the task wrote nothing.
+    """
+    if nf.remote_scheme(workdir):
+        try:
+            entries = nf.remote_ls(workdir)
+        except nf.RemoteError as e:
+            raise ValueError(f"couldn't list {workdir}: {e}")
+        return [{"name": n.rstrip("/"), "size": size, "dir": n.endswith("/")}
+                for n, size in entries
+                if not n.startswith(".") and n.rstrip("/") not in nf.JUNK_NAMES]
+    return [{"name": p.name, "size": p.stat().st_size if p.is_file() else None,
+             "dir": p.is_dir()}
+            for p in _visible_files(workdir)]
+
+
 def _visible_files(workdir: str) -> list[Path]:
     """What the files view would show: Nextflow's own .command.* plumbing is
     hidden, because it is reachable through get_task instead."""
@@ -170,11 +190,12 @@ def tool_get_task(run: str, task_hash: str, include_logs: bool = True) -> dict:
         raise ValueError(f"no task matching {task_hash!r} in this run")
     if task.get("workdir"):
         task = dict(task)
-        task["outputs"] = [
-            {"name": p.name, "size": p.stat().st_size if p.is_file() else None,
-             "dir": p.is_dir()}
-            for p in _visible_files(task["workdir"])
-        ]
+        try:
+            task["outputs"] = _outputs(task["workdir"])
+        except ValueError as e:
+            # The task itself is still worth returning; say what couldn't load.
+            task["outputs"] = []
+            task["outputs_error"] = str(e)
     return task
 
 
@@ -193,11 +214,7 @@ def tool_list_outputs(run: str, task_hash: str) -> dict:
         "hash": task["hash"],
         "name": task["name"],
         "workdir": wd,
-        "outputs": [
-            {"name": p.name, "size": p.stat().st_size if p.is_file() else None,
-             "dir": p.is_dir()}
-            for p in _visible_files(wd)
-        ],
+        "outputs": _outputs(wd),
     }
 
 
@@ -216,6 +233,8 @@ def tool_read_output(run: str, task_hash: str, name: str,
     wd = task.get("workdir")
     if not wd:
         raise ValueError("this task has no work dir yet")
+    if nf.remote_scheme(wd):
+        return _read_remote_output(wd, name, int(offset), max_lines)
     target = Path(wd) / name
     if not target.exists():
         raise ValueError(f"{name!r} is not in {wd}")
@@ -231,6 +250,40 @@ def tool_read_output(run: str, task_hash: str, name: str,
             "container to read; open it in the UI, or run that tool yourself")
     pos, lines, at_eof = nf.read_forward(target, int(offset), lines_cap)
     return {"file": str(target), "encoding": "text", "lines": lines,
+            "next_offset": pos, "offset_unit": "bytes", "at_eof": at_eof}
+
+
+def _read_remote_output(wd: str, name: str, offset: int,
+                        max_lines: int) -> dict:
+    """read_output for a task whose work dir is in object storage.
+
+    Same contract as the local path — text pages by byte offset, gzip by line
+    offset — so an agent's paging loop doesn't care where the file lives.
+    """
+    uri = f"{wd.rstrip('/')}/{name}"
+    parent, _, leaf = uri.rpartition("/")
+    try:
+        present = {n for n, _ in nf.remote_ls(parent)}
+    except nf.RemoteError as e:
+        raise ValueError(f"couldn't list {parent}: {e}")
+    if leaf not in present:
+        raise ValueError(f"{name!r} is not in {wd}")
+    lines_cap = max(1, min(int(max_lines), MAX_OUTPUT_LINES))
+    probe = Path(leaf)                       # the name checks are suffix-based
+    if nf.decode_tool(probe) is not None:
+        raise ValueError(
+            f"{name!r} needs {nf.decode_tool(probe)!r} from the task's "
+            "container to read; open it in the UI, or run that tool yourself")
+    try:
+        if nf.is_gzip(probe):
+            lines = nf.remote_head_gzip(uri, lines_cap, skip=offset)
+            return {"file": uri, "encoding": "gzip", "lines": lines,
+                    "next_offset": offset + len(lines), "offset_unit": "lines",
+                    "at_eof": len(lines) < lines_cap}
+        pos, lines, at_eof = nf.remote_read(uri, offset, lines_cap)
+    except nf.RemoteError as e:
+        raise ValueError(f"couldn't read {uri}: {e}")
+    return {"file": uri, "encoding": "text", "lines": lines,
             "next_offset": pos, "offset_unit": "bytes", "at_eof": at_eof}
 
 

@@ -49,3 +49,6 @@ py-modules = ["nf_tui", "nf_tui_serve", "nf_tui_run", "nf_tui_mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "minio: runs against a real MinIO container with the real AWS CLI (needs docker and aws)",
+]

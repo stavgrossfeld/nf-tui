@@ -3280,3 +3280,59 @@ def test_aws_batch_handler_line_is_parsed(tmp_path):
     t = parse_log(log)[0]
     assert t.workdir == "/mnt/scratch/aa/bbccdd"
     assert t.status.upper() == "COMPLETED"
+
+
+# ---- telling "couldn't read" from "isn't there" -----------------------------
+# These messages were captured from the real AWS CLI against MinIO, not written
+# from memory — two of the guesses they replaced were wrong (a bad secret is a
+# bare 403, not InvalidAccessKeyId; and cp from a missing bucket is a 404).
+
+_NOT_FOUND = ("download failed: s3://nf-tui-test/work/nope/.command.log to - An "
+              "error occurred (404) when calling the HeadObject operation: Not Found")
+_REFUSED = ('download failed: s3://nf-tui-test/work/0a/30cd/.command.log to - '
+            'Could not connect to the endpoint URL: "http://127.0.0.1:1/nf-tui-test/work/0a/"')
+_FORBIDDEN = ("download failed: s3://nf-tui-test/work/0a/30cd/.command.log to - An "
+              "error occurred (403) when calling the HeadObject operation: Forbidden")
+_NO_CREDS = ("download failed: s3://nf-tui-test/work/0a/30cd/.command.log to - "
+             "Unable to locate credentials")
+_NO_BUCKET = ("aws: [ERROR]: An error occurred (NoSuchBucket) when calling the "
+              "ListObjectsV2 operation: The specified bucket does not exist")
+
+
+@pytest.mark.parametrize("stderr", ["", "   \n", _NOT_FOUND])
+def test_remote_failure_treats_not_found_as_absent(stderr):
+    import nf_tui as m
+    assert m.remote_failure(stderr) is None
+
+
+def test_remote_failure_names_the_endpoint_when_it_cannot_connect(monkeypatch):
+    import nf_tui as m
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "http://127.0.0.1:1")
+    why = m.remote_failure(_REFUSED)
+    assert "could not connect" in why and "http://127.0.0.1:1" in why
+
+
+def test_remote_failure_suspects_the_endpoint_on_a_403_when_none_is_set(monkeypatch):
+    """Forgetting AWS_ENDPOINT_URL sends a MinIO request to real AWS: a 403."""
+    import nf_tui as m
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    why = m.remote_failure(_FORBIDDEN)
+    assert "access denied (403)" in why and "AWS_ENDPOINT_URL" in why
+
+
+def test_remote_failure_does_not_blame_a_set_endpoint_for_a_403(monkeypatch):
+    import nf_tui as m
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "http://minio:9000")
+    why = m.remote_failure(_FORBIDDEN)
+    assert "access denied (403)" in why and "it is unset" not in why
+
+
+def test_remote_failure_explains_missing_credentials():
+    import nf_tui as m
+    assert "no AWS credentials" in m.remote_failure(_NO_CREDS)
+
+
+def test_remote_failure_keeps_the_stores_own_reason():
+    import nf_tui as m
+    why = m.remote_failure(_NO_BUCKET)
+    assert "NoSuchBucket" in why and not why.startswith("aws: [ERROR]")

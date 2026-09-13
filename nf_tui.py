@@ -35,6 +35,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -181,7 +183,24 @@ REMOTE_TIMEOUT = 30
 # Comfortably above every caller's own limit, the largest being the in-pane
 # preview at VIEW_MAX_LINES * 200.
 REMOTE_CAT_MAX = 1_000_000
+# Most bytes fetched by one ranged read when paging an object.
+REMOTE_RANGE_CHUNK = 256 * 1024
+# First guess at a page's size, per line asked for. Reads grow from here when
+# lines turn out longer — a fixed 256 KB per page moved 11.6 MB to page through
+# a 1.08 MB file 400 lines at a time.
+REMOTE_BYTES_PER_LINE = 128
 _remote_cache: dict[tuple[str, str], object] = {}
+
+
+class RemoteError(Exception):
+    """The object store could not be read — which is not the same as the
+    object not existing.
+
+    Every read used to return None for both. A wrong endpoint, bad credentials
+    and a bucket that doesn't exist all came out as "(no output in the object
+    store yet)", which sends you looking for a pipeline problem that isn't
+    there.
+    """
 
 
 def remote_tool(scheme: str | None) -> dict | None:
@@ -190,14 +209,67 @@ def remote_tool(scheme: str | None) -> dict | None:
     return spec if spec and shutil.which(spec["bin"]) else None
 
 
+def _require_tool(uri: str) -> dict:
+    scheme = remote_scheme(uri)
+    spec = REMOTE_TOOLS.get(scheme or "")
+    if spec is None:
+        raise RemoteError(f"no reader for {uri}")
+    if shutil.which(spec["bin"]) is None:
+        raise RemoteError(f"`{spec['bin']}` is not installed, so {scheme}:// "
+                          f"work dirs can't be read")
+    return spec
+
+
+def remote_failure(stderr: str) -> str | None:
+    """None if a CLI's error means the object isn't there, else why it failed.
+
+    Matched against what the AWS CLI actually prints, captured from a real run
+    against MinIO rather than guessed: a missing key is "(404) ... Not Found",
+    and an empty listing exits 1 with nothing on stderr. Two traps worth
+    knowing: `aws s3 cp` from a bucket that doesn't exist *also* says 404 (only
+    `ls` says NoSuchBucket), and forgetting AWS_ENDPOINT_URL sends the request
+    to real AWS, which answers 403 — so a 403 names the endpoint as a suspect.
+    """
+    text = " ".join(stderr.split())
+    if not text or "(404)" in text or "NoSuchKey" in text:
+        return None
+    # "download failed: s3://b/k to - An error occurred ..." -> the reason
+    text = re.sub(r"^download failed: \S+ to \S+ ", "", text)
+    text = re.sub(r"^aws: \[ERROR\]: ", "", text)
+    endpoint = os.environ.get("AWS_ENDPOINT_URL")
+    if "Could not connect to the endpoint URL" in text:
+        return (f"could not connect to the object store"
+                + (f" at {endpoint}" if endpoint else "")
+                + " — is it running, and is AWS_ENDPOINT_URL right?")
+    if "Unable to locate credentials" in text:
+        return ("no AWS credentials found — set AWS_ACCESS_KEY_ID and "
+                "AWS_SECRET_ACCESS_KEY, or AWS_PROFILE")
+    if "(403)" in text or "Forbidden" in text or "AccessDenied" in text:
+        hint = ("check the credentials" if endpoint else
+                "check the credentials; for MinIO or other S3-compatible "
+                "storage, also set AWS_ENDPOINT_URL (it is unset, so this went "
+                "to AWS)")
+        return f"access denied (403) — {hint}"
+    return text[:300]
+
+
 def _run_remote(argv: list[str], uri: str) -> str | None:
+    """stdout on success, None if the object isn't there; raises RemoteError."""
+    spec_bin = argv[0]
+    if shutil.which(spec_bin) is None:
+        raise RemoteError(f"`{spec_bin}` is not installed")
     cmd = [a.replace("{uri}", uri) for a in argv]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=REMOTE_TIMEOUT)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        raise RemoteError(f"reading {uri} timed out after {REMOTE_TIMEOUT}s")
+    if r.returncode == 0:
+        return r.stdout
+    why = remote_failure(r.stderr)
+    if why is None:
         return None
-    return r.stdout if r.returncode == 0 else None
+    raise RemoteError(why)
 
 
 def _run_remote_tail(argv: list[str], uri: str,
@@ -209,72 +281,86 @@ def _run_remote_tail(argv: list[str], uri: str,
     stored in `_remote_cache`, which never releases it — to serve a caller that
     wants the last few KB. The transfer itself is unavoidable (object stores
     have no "tail"), but the memory is not.
+
+    stderr goes to a temporary file rather than a pipe: it is how a failure
+    says *why*, and a pipe nobody drains could fill and stall the transfer.
     """
+    if shutil.which(argv[0]) is None:
+        raise RemoteError(f"`{argv[0]}` is not installed")
     cmd = [a.replace("{uri}", uri) for a in argv]
-    try:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL)
-    except (FileNotFoundError, OSError):
-        return None
-    buf = b""
-    deadline = time.monotonic() + REMOTE_TIMEOUT
-    try:
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                p.kill()
+    with tempfile.TemporaryFile() as err:
+        try:
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        except OSError as e:
+            raise RemoteError(f"could not run {cmd[0]}: {e}")
+        buf = b""
+        deadline = time.monotonic() + REMOTE_TIMEOUT
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    p.kill()
+                    raise RemoteError(
+                        f"reading {uri} timed out after {REMOTE_TIMEOUT}s")
+                if not select.select([p.stdout], [], [], min(left, 1.0))[0]:
+                    continue
+                chunk = p.stdout.read1(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                if len(buf) > max_chars * 4:  # bytes; margin for multibyte UTF-8
+                    buf = buf[-max_chars * 2:]
+            rc = p.wait(timeout=5)
+        except RemoteError:
+            raise
+        except Exception as e:                 # noqa: BLE001
+            p.kill()
+            raise RemoteError(f"reading {uri} failed: {e}")
+        finally:
+            if p.stdout is not None:
+                try:
+                    p.stdout.close()
+                except OSError:
+                    pass
+        if rc != 0:
+            err.seek(0)
+            why = remote_failure(err.read().decode("utf-8", errors="replace"))
+            if why is None:
                 return None
-            if not select.select([p.stdout], [], [], min(left, 1.0))[0]:
-                continue
-            chunk = p.stdout.read1(65536)
-            if not chunk:
-                break
-            buf += chunk
-            if len(buf) > max_chars * 4:      # bytes; margin for multibyte UTF-8
-                buf = buf[-max_chars * 2:]
-        rc = p.wait(timeout=5)
-    except Exception:                          # noqa: BLE001
-        p.kill()
-        return None
-    finally:
-        if p.stdout is not None:
-            try:
-                p.stdout.close()
-            except OSError:
-                pass
-    if rc != 0:
-        return None
+            raise RemoteError(why)
     text = buf.decode("utf-8", errors="replace")
     return text[-max_chars:] if len(text) > max_chars else text
 
 
 def remote_cat(uri: str, limit: int = 20_000) -> str | None:
-    """The tail of an object, as text, or None if absent or unreadable.
+    """The tail of an object as text, or None if it isn't there.
 
-    What is cached is the bounded tail, not the object: REMOTE_CAT_MAX is above
-    every caller's `limit`, so this is what they'd have got from the full text.
+    Raises RemoteError when the store can't be read at all. Only answers are
+    cached — a real object, or a real absence. A failure is not: caching one
+    turned a store that was still starting, or a moment's network trouble, into
+    "this file doesn't exist" for the rest of the session.
     """
     key = ("cat", uri)
     if key in _remote_cache:
         got = _remote_cache[key]
         return got[-limit:] if isinstance(got, str) else None
-    spec = remote_tool(remote_scheme(uri))
-    if spec is None:
-        return None
+    spec = _require_tool(uri)
     out = _run_remote_tail(spec["cat"], uri)
     _remote_cache[key] = out if out is not None else 0
     return None if out is None else out[-limit:]
 
 
 def remote_ls(uri: str) -> list[tuple[str, int | None]]:
-    """(name, size) for the objects directly under a prefix."""
+    """(name, size) for the objects directly under a prefix.
+
+    An empty list means nothing is there; RemoteError means the store couldn't
+    be listed. Failures aren't cached, for the reason given in remote_cat.
+    """
     key = ("ls", uri)
     if key in _remote_cache:
         got = _remote_cache[key]
         return got if isinstance(got, list) else []
-    spec = remote_tool(remote_scheme(uri))
-    if spec is None:
-        return []
+    spec = _require_tool(uri)
     out = _run_remote(spec["ls"], uri)
     entries: list[tuple[str, int | None]] = []
     for line in (out or "").splitlines():
@@ -289,6 +375,129 @@ def remote_ls(uri: str) -> list[tuple[str, int | None]]:
             entries.append((line.rsplit("/", 1)[-1] or line, None))
     _remote_cache[key] = entries
     return entries
+
+
+def _s3_split(uri: str) -> tuple[str, str]:
+    """s3://bucket/some/key -> ("bucket", "some/key")."""
+    bucket, _, key = uri[len("s3://"):].partition("/")
+    return bucket, key
+
+
+def _s3_range(uri: str, start: int, length: int) -> bytes:
+    """Bytes [start, start+length) of an S3 object; b"" past its end.
+
+    `aws s3api get-object --range` writes the body to a file and its metadata
+    as JSON on stdout, so the body goes through a temporary file rather than
+    /dev/stdout, where the two would interleave.
+    """
+    if shutil.which("aws") is None:
+        raise RemoteError("`aws` is not installed")
+    bucket, key = _s3_split(uri)
+    fd, path = tempfile.mkstemp(prefix="nf-tui-range-")
+    os.close(fd)
+    try:
+        cmd = ["aws", "s3api", "get-object", "--bucket", bucket, "--key", key,
+               "--range", f"bytes={start}-{start + length - 1}", path]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=REMOTE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise RemoteError(f"reading {uri} timed out after {REMOTE_TIMEOUT}s")
+        if r.returncode != 0:
+            if "InvalidRange" in r.stderr:     # at or past the end (or empty)
+                return b""
+            why = remote_failure(r.stderr)
+            raise RemoteError(why or f"{uri} does not exist")
+        return Path(path).read_bytes()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def remote_read(uri: str, offset: int = 0,
+                max_lines: int = VIEW_MAX_LINES) -> tuple[int, list[str], bool]:
+    """read_forward for an object: (next_offset, lines, at_eof), by byte offset.
+
+    Pages with ranged GETs, so walking a multi-gigabyte object costs a chunk
+    per page rather than the whole object per page. S3 only for now — gcloud
+    has ranges too, but nothing here has been run against it, so it fails
+    loudly instead of pretending.
+    """
+    if remote_scheme(uri) != "s3":
+        raise RemoteError(f"paging {remote_scheme(uri)}:// objects isn't "
+                          f"supported yet (only s3://)")
+    lines: list[str] = []
+    pos = offset          # byte offset of the first line not yet returned
+    buf = b""             # bytes from `pos` on, already fetched
+    at_end = False
+    want = min(REMOTE_RANGE_CHUNK, max(8192, max_lines * REMOTE_BYTES_PER_LINE))
+    while len(lines) < max_lines:
+        nl = buf.find(b"\n")
+        if nl >= 0:
+            lines.append(buf[:nl].decode("utf-8", errors="replace"))
+            buf = buf[nl + 1:]
+            pos += nl + 1
+            continue
+        if at_end:
+            if buf:                            # last line, no trailing newline
+                lines.append(buf.decode("utf-8", errors="replace"))
+                pos += len(buf)
+                buf = b""
+            break
+        chunk = _s3_range(uri, pos + len(buf), want)
+        if len(chunk) < want:
+            at_end = True
+        buf += chunk
+        want = min(REMOTE_RANGE_CHUNK, want * 2)   # not enough: fetch more next
+    return pos, lines, at_end and not buf
+
+
+def remote_head_gzip(uri: str, lines: int, skip: int = 0) -> list[str]:
+    """head_gzip for an object: `lines` lines after `skip`, streamed.
+
+    Like the local version, resuming means decompressing from the start, but
+    the object is streamed through the CLI and dropped once enough lines are
+    in, so neither memory nor transfer grows with the file past that point.
+    """
+    spec = _require_tool(uri)
+    cmd = [a.replace("{uri}", uri) for a in spec["cat"]]
+    out: list[str] = []
+    with tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        timer = threading.Timer(REMOTE_TIMEOUT * 4, p.kill)
+        timer.start()
+        stopped_early = False
+        try:
+            with gzip.open(p.stdout, "rt", errors="replace") as f:
+                for i, line in enumerate(f):
+                    if i < skip:
+                        continue
+                    if len(out) >= lines:
+                        stopped_early = True
+                        break
+                    out.append(line.rstrip("\n"))
+        except (OSError, EOFError) as e:
+            p.kill()
+            rc = p.wait()
+            err.seek(0)
+            why = remote_failure(err.read().decode("utf-8", errors="replace"))
+            if rc != 0 and why:
+                raise RemoteError(why)
+            if rc != 0:
+                raise RemoteError(f"{uri} does not exist")
+            raise RemoteError(f"{uri} is not readable as gzip: {e}")
+        finally:
+            timer.cancel()
+            if p.poll() is None:
+                p.kill()
+        rc = p.wait()
+        if not stopped_early and rc != 0:
+            err.seek(0)
+            why = remote_failure(err.read().decode("utf-8", errors="replace"))
+            raise RemoteError(why or f"{uri} does not exist")
+    return out
 
 
 def remote_forget(prefix: str) -> None:
@@ -887,13 +1096,23 @@ class Metrics:
 
 
 def parse_trace(workdir: str) -> Metrics:
-    """Read <workdir>/.command.trace (Nextflow's `key=value` resource dump)."""
-    if not workdir:
+    """Read <workdir>/.command.trace (Nextflow's `key=value` resource dump).
+
+    Local work dirs only: `Path("s3://b/k")` collapses to "s3:/b/k", a local
+    path that can't exist. Remote traces are fetched by the caller and handed
+    to parse_trace_text.
+    """
+    if not workdir or remote_scheme(workdir):
         return Metrics()
     try:
         text = (Path(workdir) / ".command.trace").read_text(errors="replace")
     except OSError:
         return Metrics()
+    return parse_trace_text(text)
+
+
+def parse_trace_text(text: str) -> Metrics:
+    """Parse the contents of a .command.trace."""
     d: dict[str, str] = {}
     for line in text.splitlines():
         if "=" in line:
@@ -1891,12 +2110,26 @@ class NfScope(App):
         name = ".command.log"
         # A live task's log grows, so don't serve a stale copy of it.
         remote_forget(f"{workdir}/{name}")
-        body = remote_cat(f"{workdir}/{name}")
-        if body is None:                       # not written yet, or unreadable
-            body = remote_cat(f"{workdir}/.command.err") or ""
-        self.call_from_thread(self._paint_remote_log, workdir, view, body)
+        note = None
+        try:
+            body = remote_cat(f"{workdir}/{name}")
+            if body is None:
+                body = remote_cat(f"{workdir}/.command.err")
+            if body is None:
+                # Neither file is there. `cp` can't tell a missing object from a
+                # missing bucket (both 404), but a listing can — so ask, rather
+                # than guess "not written yet" for a path that can't exist.
+                entries = remote_ls(workdir)
+                note = ("(no .command.log in the object store yet)" if entries
+                        else f"(nothing under {workdir} in the object store — "
+                             f"not uploaded yet, or the wrong bucket?)")
+        except RemoteError as e:
+            body, note = None, f"✗ couldn't read the object store: {e}"
+        self.call_from_thread(self._paint_remote_log, workdir, view,
+                              body or "", note)
 
-    def _paint_remote_log(self, workdir: str, view: str, body: str) -> None:
+    def _paint_remote_log(self, workdir: str, view: str, body: str,
+                          note: str | None = None) -> None:
         # The selection or the view may have moved on while we were fetching.
         t = self._selected()
         if self.view != view or t is None or t.workdir != workdir:
@@ -1911,20 +2144,32 @@ class NfScope(App):
         if body.strip():
             self._emit_view(log, body)
         else:
-            log.write("(no output in the object store yet)")
+            log.write(note or "(no output in the object store yet)")
 
     @work(thread=True, exclusive=True, group="remote-files")
     def _fetch_remote_files(self, workdir: str) -> None:
         remote_forget(f"{workdir}/")
-        self.call_from_thread(self._paint_remote_files, workdir,
-                              remote_ls(workdir))
+        try:
+            entries, error = remote_ls(workdir), None
+        except RemoteError as e:
+            entries, error = [], str(e)
+        self.call_from_thread(self._paint_remote_files, workdir, entries, error)
 
     def _paint_remote_files(self, workdir: str,
-                            entries: list[tuple[str, int | None]]) -> None:
+                            entries: list[tuple[str, int | None]],
+                            error: str | None = None) -> None:
         if self.view != "files" or (self._files_task or Task()).workdir != workdir:
             return
         files = self.query_one("#files", OptionList)
         files.clear_options()
+        if error:
+            files.add_option(Option("(can't list — see pane)"))
+            panes = self.query("#log")
+            if panes:
+                log = panes.first(RichLog)
+                log.clear()
+                log.write(f"✗ couldn't list {workdir}:\n  {error}")
+            return
         self._files = []                       # these are URIs, not local paths
         self._remote_files = [f"{workdir}/{n}" for n, _ in entries
                               if not n.endswith("/")]
@@ -1954,11 +2199,16 @@ class NfScope(App):
 
     @work(thread=True, exclusive=True, group="remote-object")
     def _fetch_remote_object(self, uri: str) -> None:
-        body = remote_cat(uri, limit=VIEW_MAX_LINES * 200)
+        try:
+            body = remote_cat(uri, limit=VIEW_MAX_LINES * 200)
+        except RemoteError as e:
+            self.call_from_thread(self._viewer_done,
+                                  [f"✗ couldn't read {uri}:", f"  {e}"],
+                                  VIEW_MAX_LINES, None)
+            return
         lines = (body or "").splitlines()[:VIEW_MAX_LINES]
         if body is None:
-            lines = ["(could not read this object — check credentials "
-                     "and that it exists)"]
+            lines = ["(this object isn't in the store)"]
         elif not lines:
             lines = ["(empty)"]
         self.call_from_thread(self._viewer_done, lines, VIEW_MAX_LINES, None)
@@ -3397,11 +3647,35 @@ def run_report(log_file: Path, *, logs: str = "failed",
     errors = parse_errors(log_file)
 
     out_tasks = []
+    # The first store-level failure (unreachable, denied, no credentials) is
+    # recorded once and stops further reads: the next hundred tasks would all
+    # fail the same way, one CLI process — and possibly one timeout — each.
+    remote_error: str | None = None
     for t in tasks:
         if failed_only and not is_failed(t):
             continue
         proc, tag = split_name(t.name)
+        want = logs == "all" or (logs == "failed" and is_failed(t))
         m = parse_trace(t.workdir) if t.workdir else Metrics()
+        remote_logs: dict[str, str] = {}
+        remote = remote_scheme(t.workdir)
+        # Remote metrics only for tasks whose logs are wanted anyway: fetching
+        # .command.trace for every task is a CLI call each, which is minutes
+        # on a large run for a `--json` that asked only about failures.
+        if remote and want and remote_error is None:
+            try:
+                for key, name in (("script", ".command.sh"),
+                                  ("out", ".command.out"),
+                                  ("err", ".command.err"),
+                                  ("log", ".command.log")):
+                    body = remote_cat(f"{t.workdir}/{name}", limit=LOG_CHARS)
+                    if body:
+                        remote_logs[key] = body
+                trace = remote_cat(f"{t.workdir}/.command.trace")
+                if trace:
+                    m = parse_trace_text(trace)
+            except RemoteError as e:
+                remote_error = str(e)
         state = task_state(t)
         entry: dict = {
             "hash": t.hash,
@@ -3436,8 +3710,12 @@ def run_report(log_file: Path, *, logs: str = "failed",
                                   "command_error": command_error(block),
                                   "why": why_failed(block),
                                   "report": block}
-        want = logs == "all" or (logs == "failed" and is_failed(t))
-        if want and t.workdir:
+        if remote and want:
+            if remote_logs:
+                entry["logs"] = remote_logs
+            if remote_error:
+                entry["logs_error"] = remote_error
+        elif want and t.workdir:
             wd = Path(t.workdir)
             captured = {}
             for key, name in (("script", ".command.sh"),
@@ -3451,7 +3729,9 @@ def run_report(log_file: Path, *, logs: str = "failed",
                 entry["logs"] = captured
         out_tasks.append(entry)
 
+    report_extra = {"remote_error": remote_error} if remote_error else {}
     return {
+        **report_extra,
         "log": str(log_file),
         "work_dir": str(work_root),
         "live": bool(tasks) and any(

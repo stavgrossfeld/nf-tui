@@ -26,8 +26,7 @@ Install from the repository:
   resolved** — every task sat at RUNNING for ever with no log, output or
   metric. Now 6 of 6, with the local layout unchanged at 24 of 24. Found by
   running a pipeline through Nextflow's slurm executor against stand-in
-  `sbatch`/`squeue` binaries, the same way the S3 support goes through a fake
-  `aws`.
+  `sbatch`/`squeue` binaries.
 
 ### Views
 
@@ -134,7 +133,7 @@ Install from the repository:
 - **Singularity/Apptainer is executed in tests, not just parsed.** The format
   tests pinned a verbatim `.command.run`; these run the whole path — probe the
   image, build the decode, execute it — through a shim that behaves like the
-  `singularity` CLI, the way the S3 support goes through a fake `aws`. Both new
+  `singularity` CLI. Both new
   tests fail if the invocation reverts to docker's `run --rm`, which is the
   shape of the bug that once made Singularity silently useless.
 
@@ -143,6 +142,26 @@ Install from the repository:
   still armed — you came back to a tree hiding everything that worked. It is
   now a rung in the escape hierarchy: one press drops the filter, the next
   leaves the run.
+
+- **S3 work trees work everywhere, not just in one pane.** The UI could fetch a
+  cloud task's log, but `--json` built `Path("s3://…")`, which collapses to a
+  local path that can't exist, and the MCP tools used local file calls
+  throughout. Against a real S3 API — MinIO, through the real AWS CLI — `--json
+  --logs all` returned logs for **0 of 40** tasks, `list_outputs` came back
+  empty, and `read_output` said a file that was there wasn't. All three now read
+  the store: logs, metrics from `.command.trace`, output listings, and paged
+  reads (text by byte range, gzip streamed by line). Checked on a real
+  nf-core/sarek run uploaded to MinIO, including its two failed tasks.
+- **An unreadable store no longer looks like an empty one.** Every read returned
+  None for "not there" *and* for "couldn't read", so a wrong endpoint, bad
+  credentials or a missing bucket all showed as "(no output in the object store
+  yet)". Failures are now reported with the store's reason, and are no longer
+  cached — one failed read used to mark an object missing for the rest of the
+  session. Forgetting `AWS_ENDPOINT_URL` for MinIO sends the request to real AWS
+  and gets a 403; the message names the unset endpoint.
+- **Paging an S3 object moved 10× the data it needed.** Each page fetched a fixed
+  256 KB: 11.6 MB to read a 1.08 MB file 400 lines at a time. Reads now start at
+  the size the page needs and grow only for long lines — 2.52 MB, byte-identical.
 
 - **"Failed only" says so in the header.** `x` is a sticky filter whose only
   announcement was a toast that fades. Leave it on and the header counts every

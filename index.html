@@ -429,14 +429,15 @@ tail_log      search_log</code></pre>
     stand-in <code>sbatch</code>/<code>squeue</code> binaries, which is what turned up
     the grid-executor parsing bug. But that is a stand-in scheduler, not a real
     <code>slurmd</code>, and nothing here has run against a real <code>.sif</code> or a
-    real S3 bucket &mdash; the cloud path goes through a fake <code>aws</code>.
+    real AWS account &mdash; S3 is tested against MinIO with the real AWS CLI, which
+    speaks the same API but isn't AWS itself.
     Reports from a real cluster are welcome.
   </p>
 </section>
 
 <footer class="wrap">
   <span>MIT</span>
-  <span>207 tests</span>
+  <span>235 tests</span>
   <a href="https://github.com/stavgrossfeld/nf-tui">github.com/stavgrossfeld/nf-tui</a>
 </footer>
 </div>

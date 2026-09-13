@@ -247,6 +247,22 @@ Task states, progress, throughput and failure reports come from the local
 `.nextflow.log`. Per-task logs and outputs are pulled from S3 on demand via your
 configured `aws` CLI, so nothing extra needs installing or authenticating.
 
+**S3-compatible storage (MinIO, Ceph, …).** Set `AWS_ENDPOINT_URL` and nf-tui
+reads the work tree there instead — it goes through the same `aws` CLI, which
+honours that variable:
+
+```bash
+AWS_ENDPOINT_URL=http://minio.internal:9000 nf-tui /path/to/run
+```
+
+Forget it and the requests go to real AWS, which answers `403`; nf-tui says so,
+and names the missing endpoint as the likely reason.
+
+When the store can't be read — unreachable, access denied, no credentials, no
+such bucket — the pane says which, rather than reporting an empty log. The same
+goes for `--json` (a top-level `remote_error`, and `logs_error` per task) and for
+the MCP tools, which return the store's reason as an error.
+
 One thing that stays local-only: telling *running* from *queued* uses
 `.command.begin` in each work dir, and probing that per task over S3 on every
 refresh would be far too slow — cloud tasks in flight are reported together
@@ -316,6 +332,7 @@ terminal, not the browser.
 
 ```bash
 uv run --extra dev pytest        # run the test suite
+uv run --extra dev pytest -m "not minio"   # skip the MinIO integration tests
 
 # generate a synthetic run to poke at (or stress-test) by hand:
 python tests/generate_run.py /tmp/bigrun --tasks 10000 --procs 50
@@ -327,6 +344,13 @@ edge cases, and a 10,000-task scale check (parse < 0.5s, per-render < 50ms,
 idle refresh ~free). The scale tests synthesize a `.nextflow.log` rather than
 run 10k real tasks; `test_parse_matches_real_format` pins the parser to a
 verbatim real log line so the synthetic stays faithful.
+
+The S3 path is tested for real in `tests/test_minio.py`: it starts MinIO in a
+container, uploads a run's work tree, and drives nf-tui, `--json` and the MCP
+tools through the actual AWS CLI. Those tests need `docker` and `aws`, and skip
+without them — set `NF_TUI_REQUIRE_MINIO=1` to make a missing prerequisite a
+failure instead, which is what CI does. Every AWS setting is pinned inside the
+tests, so they never reach real AWS or read your `~/.aws`.
 
 ## License
 
